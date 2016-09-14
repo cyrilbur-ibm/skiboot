@@ -22,29 +22,14 @@
 #include <libflash/libffs.h>
 #include <libflash/blocklevel.h>
 #include <ast.h>
+#include <ast-sf.h>
 
 #include "astbmc.h"
 
-int pnor_init(void)
+static int pnor_init(struct spi_flash_ctrl *pnor_ctrl)
 {
-	struct spi_flash_ctrl *pnor_ctrl;
 	struct blocklevel_device *bl = NULL;
 	int rc;
-
-	/* Open controller and flash. If the LPC->AHB doesn't point to
-	 * the PNOR flash base we assume we're booting from BMC system
-	 * memory (or some other place setup by the BMC to support LPC
-	 * FW reads & writes). */
-	if (ast_is_ahb_lpc_pnor())
-		rc = ast_sf_open(AST_SF_TYPE_PNOR, &pnor_ctrl);
-	else {
-		printf("PLAT: Memboot detected\n");
-		rc = ast_sf_open(AST_SF_TYPE_MEM, &pnor_ctrl);
-	}
-	if (rc) {
-		prerror("PLAT: Failed to open PNOR flash controller\n");
-		goto fail;
-	}
 
 	rc = flash_init(pnor_ctrl, &bl, NULL);
 	if (rc) {
@@ -56,11 +41,55 @@ int pnor_init(void)
 	if (!rc)
 		return 0;
 
- fail:
+fail:
 	if (bl)
 		flash_exit(bl);
-	if (pnor_ctrl)
-		ast_sf_close(pnor_ctrl);
+
+	return rc;
+}
+
+int pnor2400_init(void)
+{
+	struct spi_flash_ctrl *pnor_ctrl;
+	int rc;
+
+	/* Open controller and flash. If the LPC->AHB doesn't point to
+	 * the PNOR flash base we assume we're booting from BMC system
+	 * memory (or some other place setup by the BMC to support LPC
+	 * FW reads & writes). */
+	if (ast_is_ahb_lpc_pnor())
+		rc = ast2400_sf_open(AST_SF_TYPE_PNOR, &pnor_ctrl);
+	else {
+		printf("PLAT: Memboot detected\n");
+		rc = ast2400_sf_open(AST_SF_TYPE_MEM, &pnor_ctrl);
+	}
+	if (rc) {
+		prerror("PLAT: Failed to open PNOR flash controller\n");
+		return rc;
+	}
+
+	rc = pnor_init(pnor_ctrl);
+	if (rc)
+		ast2400_sf_close(pnor_ctrl);
+
+	return rc;
+}
+
+int pnor2500_init(void)
+{
+	struct spi_flash_ctrl *pnor_ctrl;
+	int rc;
+
+	/* AST2500 code isn't memboot aware */
+	rc = ast2500_sf_open(AST_SF_TYPE_PNOR, &pnor_ctrl);
+	if (rc) {
+		prerror("PLAT: Failed to open PNOR flash controller\n");
+		return rc;
+	}
+
+	rc = pnor_init(pnor_ctrl);
+	if (rc)
+		ast2500_sf_close(pnor_ctrl);
 
 	return rc;
 }

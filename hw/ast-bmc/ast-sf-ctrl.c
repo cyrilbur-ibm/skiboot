@@ -1,4 +1,4 @@
-/* Copyright 2013-2014 IBM Corp.
+/* Copyright 2016 IBM Corp.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,39 +24,9 @@
 #include <libflash/libflash-priv.h>
 
 #include "ast.h"
-
-#ifndef __unused
-#define __unused __attribute__((unused))
-#endif
+#include "ast-sf.h"
 
 #define CALIBRATE_BUF_SIZE	16384
-
-struct ast_sf_ctrl {
-	/* We have 2 controllers, one for the BMC flash, one for the PNOR */
-	uint8_t			type;
-
-	/* Address and previous value of the ctrl register */
-	uint32_t		ctl_reg;
-
-	/* Control register value for normal commands */
-	uint32_t		ctl_val;
-
-	/* Control register value for (fast) reads */
-	uint32_t		ctl_read_val;
-
-	/* Flash read timing register  */
-	uint32_t		fread_timing_reg;
-	uint32_t		fread_timing_val;
-
-	/* Address of the flash mapping */
-	uint32_t		flash;
-
-	/* Current 4b mode */
-	bool			mode_4b;
-
-	/* Callbacks */
-	struct spi_flash_ctrl	ops;
-};
 
 static uint32_t ast_ahb_freq;
 
@@ -152,36 +122,17 @@ static int ast_sf_cmd_wr(struct spi_flash_ctrl *ctrl, uint8_t cmd,
 static int ast_sf_set_4b(struct spi_flash_ctrl *ctrl, bool enable)
 {
 	struct ast_sf_ctrl *ct = container_of(ctrl, struct ast_sf_ctrl, ops);
-	uint32_t ce_ctrl = 0;
 
-	if (ct->type == AST_SF_TYPE_BMC && ct->ops.finfo->size > 0x1000000)
-		ce_ctrl = ast_ahb_readl(BMC_SPI_FCTL_CE_CTRL);
-	else if (ct->type != AST_SF_TYPE_PNOR)
+	if (ct->type != AST_SF_TYPE_PNOR)
 		return enable ? FLASH_ERR_4B_NOT_SUPPORTED : 0;
 
 	/*
-	 * We update the "old" value as well since when quitting
-	 * we don't restore the mode of the flash itself so we need
-	 * to leave the controller in a compatible setup
+	 * Currently both the ast2400 and the ast2500 files over ride this
+	 * function.
+	 * This is left here so the initialiser can use it but there
+	 * doesn't seem to be a generic way to deal with this for now.
 	 */
-	if (enable) {
-		ct->ctl_val |= 0x2000;
-		ct->ctl_read_val |= 0x2000;
-		ce_ctrl |= 0x1;
-	} else {
-		ct->ctl_val &= ~0x2000;
-		ct->ctl_read_val &= ~0x2000;
-		ce_ctrl &= ~0x1;
-	}
-	ct->mode_4b = enable;
-
-	/* Update read mode */
-	ast_ahb_writel(ct->ctl_read_val, ct->ctl_reg);
-
-	if (ce_ctrl && ct->type == AST_SF_TYPE_BMC)
-		ast_ahb_writel(ce_ctrl, BMC_SPI_FCTL_CE_CTRL);
-
-	return 0;
+	return FLASH_ERR_PARM_ERROR;
 }
 
 static int ast_sf_read(struct spi_flash_ctrl *ctrl, uint32_t pos,
@@ -693,7 +644,6 @@ static int ast_sf_setup(struct spi_flash_ctrl *ctrl, uint32_t *tsize)
 	case 0xc22018: /* MX25L12835F */
 	case 0xc22019: /* MX25L25635F */
 	case 0xc2201a: /* MX66L51235F */
-	case 0xc2201b: /* MX66L1G45G */
 		return ast_sf_setup_macronix(ct, info);
 	case 0xef4018: /* W25Q128BV */
 		return ast_sf_setup_winbond(ct, info);
@@ -702,99 +652,6 @@ static int ast_sf_setup(struct spi_flash_ctrl *ctrl, uint32_t *tsize)
 	}
 	/* No special tuning */
 	return 0;
-}
-
-static bool ast_sf_init_pnor(struct ast_sf_ctrl *ct)
-{
-	uint32_t reg;
-
-	ct->ctl_reg = PNOR_SPI_FCTL_CTRL;
-	ct->fread_timing_reg = PNOR_SPI_FREAD_TIMING;
-	ct->flash = PNOR_FLASH_BASE;
-
-	/* Enable writing to the controller */
-	reg = ast_ahb_readl(PNOR_SPI_FCTL_CONF);
-	if (reg == 0xffffffff) {
-		FL_ERR("AST_SF: Failed read from controller config\n");
-		return false;
-	}
-	ast_ahb_writel(reg | 1, PNOR_SPI_FCTL_CONF);
-
-	/*
-	 * Snapshot control reg and sanitize it for our
-	 * use, switching to 1-bit mode, clearing user
-	 * mode if set, etc...
-	 *
-	 * Also configure SPI clock to something safe
-	 * like HCLK/8 (24Mhz)
-	 */
-	ct->ctl_val = ast_ahb_readl(ct->ctl_reg);
-	if (ct->ctl_val == 0xffffffff) {
-		FL_ERR("AST_SF: Failed read from controller control\n");
-		return false;
-	}
-
-	ct->ctl_val = (ct->ctl_val & 0x2000) |
-		(0x00 << 28) | /* Single bit */
-		(0x00 << 24) | /* CE# width 16T */
-		(0x00 << 16) | /* no command */
-		(0x04 <<  8) | /* HCLK/8 */
-		(0x00 <<  6) | /* no dummy cycle */
-		(0x00);	       /* normal read */
-
-	/* Initial read mode is default */
-	ct->ctl_read_val = ct->ctl_val;
-
-	/* Initial read timings all 0 */
-	ct->fread_timing_val = 0;
-
-	/* Configure for read */
-	ast_ahb_writel(ct->ctl_read_val, ct->ctl_reg);
-	ast_ahb_writel(ct->fread_timing_val, ct->fread_timing_reg);
-
-	if (ct->ctl_val & 0x2000)
-		ct->mode_4b = true;
-	else
-		ct->mode_4b = false;
-
-	return true;
-}
-
-static bool ast_sf_init_bmc(struct ast_sf_ctrl *ct)
-{
-	ct->ctl_reg = BMC_SPI_FCTL_CTRL;
-	ct->fread_timing_reg = BMC_SPI_FREAD_TIMING;
-	ct->flash = BMC_FLASH_BASE;
-
-	/*
-	 * Snapshot control reg and sanitize it for our
-	 * use, switching to 1-bit mode, clearing user
-	 * mode if set, etc...
-	 *
-	 * Also configure SPI clock to something safe
-	 * like HCLK/8 (24Mhz)
-	 */
-	ct->ctl_val =
-		(0x00 << 28) | /* Single bit */
-		(0x00 << 24) | /* CE# width 16T */
-		(0x00 << 16) | /* no command */
-		(0x04 <<  8) | /* HCLK/8 */
-		(0x00 <<  6) | /* no dummy cycle */
-		(0x00);	       /* normal read */
-
-	/* Initial read mode is default */
-	ct->ctl_read_val = ct->ctl_val;
-
-	/* Initial read timings all 0 */
-	ct->fread_timing_val = 0;
-
-	/* Configure for read */
-	ast_ahb_writel(ct->ctl_read_val, ct->ctl_reg);
-	ast_ahb_writel(ct->fread_timing_val, ct->fread_timing_reg);
-
-	ct->mode_4b = false;
-
-	return true;
 }
 
 static int ast_mem_set4b(struct spi_flash_ctrl *ctrl __unused,
@@ -871,6 +728,7 @@ int ast_sf_open(uint8_t type, struct spi_flash_ctrl **ctrl)
 	memset(ct, 0, sizeof(*ct));
 	ct->type = type;
 
+	/* Use defaults. Platform init is free to override these */
 	if (type == AST_SF_TYPE_MEM) {
 		ct->ops.cmd_wr = NULL;
 		ct->ops.cmd_rd = NULL;
@@ -880,7 +738,6 @@ int ast_sf_open(uint8_t type, struct spi_flash_ctrl **ctrl)
 		ct->ops.erase = ast_mem_erase;
 		ct->ops.setup = ast_mem_setup;
 		ct->ops.chip_id = ast_mem_chipid;
-		ct->flash = PNOR_FLASH_BASE;
 	} else {
 		ct->ops.cmd_wr = ast_sf_cmd_wr;
 		ct->ops.cmd_rd = ast_sf_cmd_rd;
@@ -891,36 +748,7 @@ int ast_sf_open(uint8_t type, struct spi_flash_ctrl **ctrl)
 
 	ast_get_ahb_freq();
 
-	if (type == AST_SF_TYPE_PNOR) {
-		if (!ast_sf_init_pnor(ct))
-			goto fail;
-	} else if (type == AST_SF_TYPE_BMC) {
-		if (!ast_sf_init_bmc(ct))
-			goto fail;
-	}
-
 	*ctrl = &ct->ops;
 
 	return 0;
- fail:
-	free(ct);
-	return -EIO;
-}
-
-void ast_sf_close(struct spi_flash_ctrl *ctrl)
-{
-	struct ast_sf_ctrl *ct = container_of(ctrl, struct ast_sf_ctrl, ops);
-
-	/* Restore control reg to read */
-	ast_ahb_writel(ct->ctl_read_val, ct->ctl_reg);
-
-	/* Additional cleanup */
-	if (ct->type == AST_SF_TYPE_PNOR) {
-		uint32_t reg = ast_ahb_readl(PNOR_SPI_FCTL_CONF);
-		if (reg != 0xffffffff)
-			ast_ahb_writel(reg & ~1, PNOR_SPI_FCTL_CONF);
-	}
-
-	/* Free the whole lot */
-	free(ct);
 }

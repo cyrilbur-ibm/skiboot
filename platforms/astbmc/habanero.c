@@ -142,7 +142,7 @@ static bool habanero_probe(void)
 DECLARE_PLATFORM(habanero) = {
 	.name			= "Habanero",
 	.probe			= habanero_probe,
-	.init			= astbmc_init,
+	.init			= ast2400bmc_init,
 	.pci_get_slot_info	= slot_table_get_slot_info,
 	.external_irq		= astbmc_ext_irq_serirq_cpld,
 	.cec_power_down         = astbmc_ipmi_power_down,

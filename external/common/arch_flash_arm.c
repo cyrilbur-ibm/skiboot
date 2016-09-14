@@ -31,6 +31,7 @@
 #include <libflash/libflash.h>
 #include <libflash/file.h>
 #include "ast.h"
+#include "ast-sf.h"
 #include "arch_flash.h"
 #include "arch_flash_arm_io.h"
 
@@ -193,6 +194,7 @@ static int open_devs(enum bmc_access access)
 static struct blocklevel_device *flash_setup(enum bmc_access access)
 {
 	int rc;
+	uint32_t reg;
 	struct blocklevel_device *bl;
 	struct spi_flash_ctrl *fl;
 
@@ -205,7 +207,20 @@ static struct blocklevel_device *flash_setup(enum bmc_access access)
 		return NULL;
 
 	/* Create the AST flash controller */
-	rc = ast_sf_open(access == BMC_DIRECT ? AST_SF_TYPE_BMC : AST_SF_TYPE_PNOR, &fl);
+	reg = ast_ahb_readl(SCU_REV_ID);
+	if (reg & SCU_REV_ID_AST2500) {
+		/* AST2500 doesn't know how to access BMC flash... yet TODO */
+		if (access != PNOR_DIRECT) {
+			fprintf(stderr, "AST2500 code isn't ready to access BMC flash\n");
+			return NULL;
+		}
+		rc = ast2500_sf_open(AST_SF_TYPE_PNOR, &fl);
+	} else if (reg & SCU_REV_ID_AST2400) {
+		rc = ast2400_sf_open(access == BMC_DIRECT ? AST_SF_TYPE_BMC : AST_SF_TYPE_PNOR, &fl);
+	} else {
+		fprintf(stderr, "Unknown chip 0x%08x\n", reg);
+		rc = 1;
+	}
 	if (rc) {
 		fprintf(stderr, "Failed to open controller\n");
 		return NULL;
@@ -368,7 +383,8 @@ void arch_flash_close(struct blocklevel_device *bl, const char *file)
 	if (file || arch_data.access == BMC_MTD || arch_data.access == PNOR_MTD) {
 		file_exit_close(bl);
 	} else {
-		flash_exit_close(bl, &ast_sf_close);
+		uint32_t reg = ast_ahb_readl(SCU_REV_ID);
+		flash_exit_close(bl, reg & SCU_REV_ID_AST2500 ? &ast2500_sf_close : &ast2400_sf_close);
 		close_devs();
 	}
 }

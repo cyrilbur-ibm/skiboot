@@ -112,12 +112,8 @@ static int astbmc_fru_init(void)
 	return 0;
 }
 
-
-void astbmc_init(void)
+static void astbmc_init(void)
 {
-	/* Initialize PNOR/NVRAM */
-	pnor_init();
-
 	/* Register the BT interface with the IPMI layer */
 	bt_init();
 	/* Initialize elog */
@@ -140,6 +136,22 @@ void astbmc_init(void)
 	/* Setup UART console for use by Linux via OPAL API */
 	if (!dummy_console_enabled())
 		uart_setup_opal_console();
+}
+
+void ast2400bmc_init(void)
+{
+	/* Initialize PNOR/NVRAM */
+	pnor2400_init();
+
+	astbmc_init();
+}
+
+void ast2500bmc_init(void)
+{
+	/* Initialize PNOR/NVRAM */
+	pnor2500_init();
+
+	astbmc_init();
 }
 
 int64_t astbmc_ipmi_power_down(uint64_t request)

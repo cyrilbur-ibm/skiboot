@@ -294,7 +294,7 @@ static bool garrison_probe(void)
 DECLARE_PLATFORM(garrison) = {
 	.name			= "Garrison",
 	.probe			= garrison_probe,
-	.init			= astbmc_init,
+	.init			= ast2400bmc_init,
 	.pci_get_slot_info	= slot_table_get_slot_info,
 	.cec_power_down         = astbmc_ipmi_power_down,
 	.cec_reboot             = astbmc_ipmi_reboot,

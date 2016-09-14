@@ -20,20 +20,6 @@
  * AHB bus registers
  */
 
-/* SPI Flash controller #1 (BMC) */
-#define BMC_SPI_FCTL_BASE	0x1E620000
-#define BMC_SPI_FCTL_CE_CTRL	(BMC_SPI_FCTL_BASE + 0x04)
-#define BMC_SPI_FCTL_CTRL	(BMC_SPI_FCTL_BASE + 0x10)
-#define BMC_SPI_FREAD_TIMING	(BMC_SPI_FCTL_BASE + 0x94)
-#define BMC_FLASH_BASE		0x20000000
-
-/* SPI Flash controller #2 (PNOR) */
-#define PNOR_SPI_FCTL_BASE	0x1E630000
-#define PNOR_SPI_FCTL_CONF	(PNOR_SPI_FCTL_BASE + 0x00)
-#define PNOR_SPI_FCTL_CTRL	(PNOR_SPI_FCTL_BASE + 0x04)
-#define PNOR_SPI_FREAD_TIMING	(PNOR_SPI_FCTL_BASE + 0x14)
-#define PNOR_FLASH_BASE		0x30000000
-
 /* LPC registers */
 #define LPC_BASE		0x1e789000
 #define LPC_HICR6		(LPC_BASE + 0x80)
@@ -51,6 +37,11 @@
 /* SCU registers */
 #define SCU_BASE		0x1e6e2000
 #define SCU_HW_STRAPPING	(SCU_BASE + 0x70)
+#define SCU_REV_ID	(SCU_BASE + 0x7c)
+
+/* SCU REV ID values */
+#define SCU_REV_ID_AST2500 0x04000000
+#define SCU_REV_ID_AST2400 0x02000000
 
 /*
  * AHB Accessors
@@ -86,17 +77,5 @@ void ast_disable_sio_uart1(void);
 void ast_setup_ibt(uint16_t io_base, uint8_t irq);
 
 #endif /* __SKIBOOT__ */
-
-/*
- * SPI Flash controllers
- */
-#define AST_SF_TYPE_PNOR	0
-#define AST_SF_TYPE_BMC		1
-#define AST_SF_TYPE_MEM		2
-
-struct spi_flash_ctrl;
-int ast_sf_open(uint8_t type, struct spi_flash_ctrl **ctrl);
-void ast_sf_close(struct spi_flash_ctrl *ctrl);
-
 
 #endif /* __AST_H */

@@ -1,3 +1,6 @@
 ast-sf-ctrl.c
+ast-sf.h
+ast2500-sf-ctrl.c
+ast2400-sf-ctrl.c
 ast.h
 io.h
