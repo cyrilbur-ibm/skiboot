@@ -72,6 +72,53 @@ static int ast2500_sf_set_4b(struct spi_flash_ctrl *ctrl, bool enable)
 	return 0;
 }
 
+static int ast2500_sf_setup(struct spi_flash_ctrl *ctrl, uint32_t *tsize)
+{
+	/*
+	 * There is some setup we can do based on the size of the flash
+	 * that libflash reports. Setup the SPI1 CE0 window correctly.
+	 */
+
+	(void) ctrl;
+
+	if (tsize) {
+		uint32_t regCE0;
+		uint32_t size = *tsize;
+		size = size >> 23; /* Get the number in MB (>> 20) and divide by 8 ( >> 3) */
+		if (size == 16) {
+			FL_DBG("128MB flash chip detected! Your maximum range is capped at 120MB\n");
+			size--;
+		} else if (size > 16) {
+			FL_ERR("Greater than 128MB flash chip detected, don't do that, bailing\n");
+			return 1;
+		}
+
+		regCE0 = ast_ahb_readl(SPI1_CE0_ADRR);
+		/*
+		 * Avoid (temporary) overlap incase it causes a freakout.
+		 * If the high address of CE0 is less than size, change CE1
+		 * first. Otherwise change CE0 first.
+		 */
+		FL_DBG("Setting up mapping 0x%x bits 27-24 of CE0 for a high address equal to %dMB\n", size, size << 3);
+		FL_DBG("Setting up mapping 0x%x bits 19-16 if CE1 for an unmaped region %d-128MB\n", size, size << 3);
+		if (((regCE0 >> 24) & 0xf) < size) {
+			/* The high address of CE1 is fixed */
+			ast_ahb_writel(size << 16, SPI1_CE1_ADRR);
+			/* The low address of CE0 is fixed */
+			ast_ahb_writel(size << 24, SPI1_CE0_ADRR);
+		} else {
+			/* The low address of CE0 is fixed */
+			ast_ahb_writel(size << 24, SPI1_CE0_ADRR);
+			/* The high address of CE1 is fixed */
+			ast_ahb_writel(size << 16, SPI1_CE1_ADRR);
+		}
+		*tsize = size << 23; /* Incase of 128MB chip we will have changed it */
+	}
+
+	/* Do nothing else until we tune properly */
+	return 0;
+}
+
 static bool ast2500_sf_init_pnor(struct ast_sf_ctrl *ct)
 {
 	uint32_t reg;
@@ -107,16 +154,6 @@ static bool ast2500_sf_init_pnor(struct ast_sf_ctrl *ct)
 	 * It isn't clear what the default on the 2400 as it depends on
 	 * hardware strapping
 	 */
-
-	/* Set CE1 before CE0 incase an overlap causes a freakout */
-	/* Start address of 0x34000000 (64M), the high is fixed */
-	reg = ast_ahb_readl(SPI1_CE1_ADRR);
-	FL_DBG("Setting up mapping 0x%x to 0x%x init: 0x%08x\n", 8 << 16, SPI1_CE1_ADRR, reg);
-	ast_ahb_writel(8 << 16, SPI1_CE1_ADRR);
-	/* High address of 0x34000000 (64M), the low is fixed */
-	reg = ast_ahb_readl(SPI1_CE0_ADRR);
-	FL_DBG("Setting up mapping 0x%x to 0x%x init: 0x%08x\n", 8 << 24, SPI1_CE0_ADRR, reg);
-	ast_ahb_writel(8 << 24, SPI1_CE0_ADRR);
 
 	/*
 	 * Snapshot control reg and sanitize it for our
