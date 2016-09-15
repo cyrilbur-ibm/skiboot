@@ -4,7 +4,7 @@ ARCH := $(shell $(GET_ARCH) "$(CROSS_COMPILE)")
 
 ifeq ($(ARCH),ARCH_ARM)
 arch := arm
-ARCH_FILES := arch_flash_common.c arch_flash_arm.c ast2400-sf-ctrl.c
+ARCH_FILES := arch_flash_common.c arch_flash_arm.c ast-sf-ctrl.c ast2400-sf-ctrl.c ast2500-sf-ctrl.c
 else
 ifeq ($(ARCH),ARCH_POWERPC)
 arch := powerpc
@@ -49,17 +49,27 @@ ARCH_OBJS := $(addprefix common-,$(ARCH_FILES:.c=.o))
 # Arch links are like this so we can have dependencies work (so that we don't
 # run the rule when the links exist), pretty build output (knowing the target
 # name) and a list of the files so we can clean them up.
-ARCH_LINKS := common/ast2400-sf-ctrl.c common/ast.h common/io.h
+ARCH_LINKS := common/ast-sf-ctrl.c common/ast2400-sf-ctrl.c common/ast2500-sf-ctrl.c \
+              common/ast.h common/ast-sf.h common/io.h
 
 arch_links: $(ARCH_LINKS)
 common/ast.h : ../../include/ast.h | common
 	$(Q_LN)ln -sf ../../include/ast.h common/ast.h
 
+common/ast-sf.h : ../../include/ast-sf.h | common
+	$(Q_LN)ln -sf ../../include/ast-sf.h common/ast-sf.h
+
 common/io.h : ../common/arch_flash_$(arch)_io.h | common
 	$(Q_LN)ln -sf arch_flash_$(arch)_io.h common/io.h
 
+common/ast-sf-ctrl.c : ../../hw/ast-bmc/ast-sf-ctrl.c | common
+	$(Q_LN)ln -sf ../../hw/ast-bmc/ast-sf-ctrl.c common/ast-sf-ctrl.c
+
 common/ast2400-sf-ctrl.c : ../../hw/ast-bmc/ast2400-sf-ctrl.c | common
 	$(Q_LN)ln -sf ../../hw/ast-bmc/ast2400-sf-ctrl.c common/ast2400-sf-ctrl.c
+
+common/ast2500-sf-ctrl.c : ../../hw/ast-bmc/ast2500-sf-ctrl.c | common
+	$(Q_LN)ln -sf ../../hw/ast-bmc/ast2500-sf-ctrl.c common/ast2500-sf-ctrl.c
 
 .PHONY: arch_clean
 arch_clean:
