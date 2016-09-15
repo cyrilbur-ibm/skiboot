@@ -214,8 +214,20 @@ static struct blocklevel_device *flash_setup(enum bmc_access access)
 	/* Open flash chip */
 	rc = flash_init(fl, &bl, &arch_data.flash_chip);
 	if (rc) {
+		void *strap;
+		uint32_t reg;
 		fprintf(stderr, "Failed to open flash chip\n");
-		return NULL;
+		/* Massive HACK */
+		strap = mmap(0, 0x1000, PROT_READ | PROT_WRITE,
+			MAP_SHARED, arch_data.fd, 0x1e6e2000);
+		reg = readl(strap + 0x70);
+		reg |= 1 << 12;
+		writel(reg, strap + 0x70);
+		rc = flash_init(fl, &bl, &arch_data.flash_chip);
+		if (rc) {
+			fprintf(stderr, "Tried a massive hack and failed\n");
+			return NULL;
+		}
 	}
 
 	return bl;
