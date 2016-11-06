@@ -73,7 +73,6 @@ int ast_copy_to_ahb(uint32_t reg, const void *src, uint32_t len);
 int ast_copy_from_ahb(void *dst, uint32_t reg, uint32_t len);
 
 void ast_io_init(void);
-bool ast_is_ahb_lpc_pnor(void);
 
 /* UART configuration */
 

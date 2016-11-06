@@ -373,32 +373,8 @@ static void ast_setup_sio_irq_polarity(void)
 
 void ast_io_init(void)
 {
-	uint32_t hicr7;
-
-	/* Read the configuration of the LPC->AHB bridge for PNOR
-	 * to extract the PNOR LPC offset which can be different
-	 * depending on flash size
-	 */
-
-	hicr7 = bmc_sio_ahb_readl(LPC_HICR7);
-	pnor_lpc_offset = (hicr7 & 0xffffu) << 16;
-	prlog(PR_DEBUG, "AST: PNOR LPC offset: 0x%08x\n", pnor_lpc_offset);
-
 	/* Configure all AIO interrupts to level low */
 	ast_setup_sio_irq_polarity();
-}
-
-bool ast_is_ahb_lpc_pnor(void)
-{
-	uint8_t boot_version;
-	uint8_t boot_flags;
-
-	boot_version = bmc_sio_inb(BMC_SIO_SCR28);
-	if (boot_version != BOOT_FLAGS_VERSION)
-		return true;
-
-	boot_flags = bmc_sio_inb(BMC_SIO_SCR29);
-	return !(boot_flags & BMC_SIO_SCR29_MEMBOOT);
 }
 
 void ast_setup_ibt(uint16_t io_base, uint8_t irq)
