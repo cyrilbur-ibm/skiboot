@@ -32,6 +32,7 @@ struct blocklevel_range {
 
 enum blocklevel_flags {
 	WRITE_NEED_ERASE = 1,
+	OPAL_RETURN_CODE_ONLY = 2,
 };
 
 /*
@@ -77,5 +78,7 @@ int blocklevel_smart_write(struct blocklevel_device *bl, uint64_t pos, const voi
 
 /* Implemented in software at this level */
 int blocklevel_ecc_protect(struct blocklevel_device *bl, uint32_t start, uint32_t len);
+
+void blocklevel_force_opal_codes(struct blocklevel_device *bl);
 
 #endif /* __LIBFLASH_BLOCKLEVEL_H */

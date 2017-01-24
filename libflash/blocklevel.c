@@ -23,6 +23,7 @@
 #include <inttypes.h>
 
 #include <libflash/errors.h>
+#include <libflash/blocklevel-errors.h>
 
 #include "blocklevel.h"
 #include "ecc.h"
@@ -84,18 +85,18 @@ int blocklevel_raw_read(struct blocklevel_device *bl, uint64_t pos, void *buf, u
 
 	if (!bl || !bl->read || !buf) {
 		errno = EINVAL;
-		return FLASH_ERR_PARM_ERROR;
+		return check_rc(bl, FLASH_ERR_PARM_ERROR);
 	}
 
 	rc = reacquire(bl);
 	if (rc)
-		return rc;
+		return check_rc(bl, rc);
 
 	rc = bl->read(bl, pos, buf, len);
 
 	release(bl);
 
-	return rc;
+	return check_rc(bl, rc);
 }
 
 int blocklevel_read(struct blocklevel_device *bl, uint64_t pos, void *buf, uint64_t len)
@@ -106,11 +107,11 @@ int blocklevel_read(struct blocklevel_device *bl, uint64_t pos, void *buf, uint6
 
 	if (!bl || !buf) {
 		errno = EINVAL;
-		return FLASH_ERR_PARM_ERROR;
+		return check_rc(bl, FLASH_ERR_PARM_ERROR);
 	}
 
 	if (!ecc_protected(bl, pos, len))
-		return blocklevel_raw_read(bl, pos, buf, len);
+		return blocklevel_raw_read(bl, pos, buf, len); /* This checks its return code */
 
 	buffer = malloc(ecc_len);
 	if (!buffer) {
@@ -130,7 +131,7 @@ int blocklevel_read(struct blocklevel_device *bl, uint64_t pos, void *buf, uint6
 
 out:
 	free(buffer);
-	return rc;
+	return check_rc(bl, rc);
 }
 
 int blocklevel_raw_write(struct blocklevel_device *bl, uint64_t pos,
@@ -140,18 +141,18 @@ int blocklevel_raw_write(struct blocklevel_device *bl, uint64_t pos,
 
 	if (!bl || !bl->write || !buf) {
 		errno = EINVAL;
-		return FLASH_ERR_PARM_ERROR;
+		return check_rc(bl, FLASH_ERR_PARM_ERROR);
 	}
 
 	rc = reacquire(bl);
 	if (rc)
-		return rc;
+		return check_rc(bl, rc);
 
 	rc = bl->write(bl, pos, buf, len);
 
 	release(bl);
 
-	return rc;
+	return check_rc(bl, rc);
 }
 
 int blocklevel_write(struct blocklevel_device *bl, uint64_t pos, const void *buf,
@@ -163,11 +164,11 @@ int blocklevel_write(struct blocklevel_device *bl, uint64_t pos, const void *buf
 
 	if (!bl || !buf) {
 		errno = EINVAL;
-		return FLASH_ERR_PARM_ERROR;
+		return check_rc(bl, FLASH_ERR_PARM_ERROR);
 	}
 
 	if (!ecc_protected(bl, pos, len))
-		return blocklevel_raw_write(bl, pos, buf, len);
+		return blocklevel_raw_write(bl, pos, buf, len); /* This checks its return code */
 
 	buffer = malloc(ecc_len);
 	if (!buffer) {
@@ -186,7 +187,7 @@ int blocklevel_write(struct blocklevel_device *bl, uint64_t pos, const void *buf
 
 out:
 	free(buffer);
-	return rc;
+	return check_rc(bl, rc);
 }
 
 int blocklevel_erase(struct blocklevel_device *bl, uint64_t pos, uint64_t len)
@@ -194,25 +195,25 @@ int blocklevel_erase(struct blocklevel_device *bl, uint64_t pos, uint64_t len)
 	int rc;
 	if (!bl || !bl->erase) {
 		errno = EINVAL;
-		return FLASH_ERR_PARM_ERROR;
+		return check_rc(bl, FLASH_ERR_PARM_ERROR);
 	}
 
 	/* Programmer may be making a horrible mistake without knowing it */
 	if (len & bl->erase_mask) {
 		fprintf(stderr, "blocklevel_erase: len (0x%"PRIx64") is not erase block (0x%08x) aligned\n",
 				len, bl->erase_mask + 1);
-		return FLASH_ERR_ERASE_BOUNDARY;
+		return check_rc(bl, FLASH_ERR_ERASE_BOUNDARY);
 	}
 
 	rc = reacquire(bl);
 	if (rc)
-		return rc;
+		return check_rc(bl, rc);
 
 	rc = bl->erase(bl, pos, len);
 
 	release(bl);
 
-	return rc;
+	return check_rc(bl, rc);
 }
 
 int blocklevel_get_info(struct blocklevel_device *bl, const char **name, uint64_t *total_size,
@@ -222,12 +223,12 @@ int blocklevel_get_info(struct blocklevel_device *bl, const char **name, uint64_
 
 	if (!bl || !bl->get_info) {
 		errno = EINVAL;
-		return FLASH_ERR_PARM_ERROR;
+		return check_rc(bl, FLASH_ERR_PARM_ERROR);
 	}
 
 	rc = reacquire(bl);
 	if (rc)
-		return rc;
+		return check_rc(bl, rc);
 
 	rc = bl->get_info(bl, name, total_size, erase_granule);
 
@@ -238,7 +239,7 @@ int blocklevel_get_info(struct blocklevel_device *bl, const char **name, uint64_
 
 	release(bl);
 
-	return rc;
+	return check_rc(bl, rc);
 }
 
 /*
@@ -280,13 +281,13 @@ int blocklevel_smart_write(struct blocklevel_device *bl, uint64_t pos, const voi
 
 	if (!write_buf || !bl) {
 		errno = EINVAL;
-		return FLASH_ERR_PARM_ERROR;
+		return check_rc(bl, FLASH_ERR_PARM_ERROR);
 	}
 
 	if (!(bl->flags & WRITE_NEED_ERASE))
-		return blocklevel_write(bl, pos, buf, len);
+		return blocklevel_write(bl, pos, buf, len); /* This checks its return code */
 
-	rc = blocklevel_get_info(bl, NULL, NULL, &erase_size);
+	rc = blocklevel_get_info(bl, NULL, NULL, &erase_size); /* This checks its return code */
 	if (rc)
 		return rc;
 
@@ -296,13 +297,13 @@ int blocklevel_smart_write(struct blocklevel_device *bl, uint64_t pos, const voi
 		write_buf_start = malloc(len);
 		if (!write_buf_start) {
 			errno = ENOMEM;
-			return FLASH_ERR_MALLOC_FAILED;
+			return check_rc(bl, FLASH_ERR_MALLOC_FAILED);
 		}
 
 		if (memcpy_to_ecc(write_buf_start, buf, ecc_buffer_size_minus_ecc(len))) {
 			free(write_buf_start);
 			errno = EBADF;
-			return FLASH_ERR_ECC_INVALID;
+			return check_rc(bl, FLASH_ERR_ECC_INVALID);
 		}
 		write_buf = write_buf_start;
 	}
@@ -352,7 +353,7 @@ out:
 out_free:
 	free(write_buf_start);
 	free(erase_buf);
-	return rc;
+	return check_rc(bl, rc);
 }
 
 static bool insert_bl_prot_range(struct blocklevel_range *ranges, struct bl_prot_range range)
@@ -458,4 +459,12 @@ int blocklevel_ecc_protect(struct blocklevel_device *bl, uint32_t start, uint32_
 	if (len < BYTES_PER_ECC)
 		return -1;
 	return !insert_bl_prot_range(&bl->ecc_prot, range);
+}
+
+void blocklevel_force_opal_codes(struct blocklevel_device *bl)
+{
+	if (!bl)
+		return;
+
+	bl->flags |= OPAL_RETURN_CODE_ONLY;
 }
