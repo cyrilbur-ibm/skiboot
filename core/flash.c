@@ -262,6 +262,9 @@ int flash_register(struct blocklevel_device *bl)
 	const char *name;
 	int rc;
 
+	/* Ensure we get sane error codes */
+	blocklevel_force_opal_codes(bl);
+
 	rc = blocklevel_get_info(bl, &name, &size, &block_size);
 	if (rc)
 		return rc;
