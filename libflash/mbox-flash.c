@@ -46,6 +46,7 @@ struct lpc_window {
 };
 
 struct mbox_flash_data {
+	int version;
 	uint32_t shift;
 	struct lpc_window read;
 	struct lpc_window write;
@@ -58,7 +59,7 @@ struct mbox_flash_data {
 	struct bmc_mbox_msg msg_mem;
 };
 
-static uint64_t mbox_flash_mask(struct mbox_flash_data *mbox_flash)
+__unused static uint64_t mbox_flash_mask(struct mbox_flash_data *mbox_flash)
 {
 	return (1 << mbox_flash->shift) - 1;
 }
@@ -93,6 +94,11 @@ static void msg_put_u32(struct bmc_mbox_msg *msg, int i, uint32_t val)
 {
 	uint32_t tmp = cpu_to_le32(val);
 	memcpy(&msg->args[i], &tmp, sizeof(val));
+}
+
+static uint32_t blocks_to_bytes(struct mbox_flash_data *mbox_flash, uint16_t blocks)
+{
+	return blocks << mbox_flash->shift;
 }
 
 static struct bmc_mbox_msg *msg_alloc(struct mbox_flash_data *mbox_flash,
@@ -225,20 +231,59 @@ static int lpc_window_write(struct mbox_flash_data *mbox_flash, uint32_t pos,
 	return 0;
 }
 
-static int mbox_flash_flush(struct mbox_flash_data *mbox_flash, uint64_t pos,
+static int mbox_flash_dirty(struct mbox_flash_data *mbox_flash, uint64_t pos,
 		uint64_t len)
 {
 	struct bmc_mbox_msg *msg;
 	int rc;
 
-	if (!mbox_flash->write.open)
-		prlog(PR_WARNING, "Attempting to flush without an open write window\n");
+	if (!mbox_flash->write.open) {
+		prlog(PR_ERR, "Attempting to dirty without an open write window\n");
+		return FLASH_ERR_DEVICE_GONE;
+	}
+
+	msg = msg_alloc(mbox_flash, MBOX_C_MARK_WRITE_DIRTY);
+	if (!msg)
+		return FLASH_ERR_MALLOC_FAILED;
+
+	if (mbox_flash->version == 1) {
+		msg_put_u16(msg, 0, pos >> mbox_flash->shift);
+		msg_put_u32(msg, 2, len);
+	} else {
+		msg_put_u16(msg, 0, (pos - mbox_flash->write.cur_pos) >> mbox_flash->shift);
+		msg_put_u16(msg, 2, ALIGN_UP(len, 1 << mbox_flash->shift) >> mbox_flash->shift);
+	}
+
+	rc = msg_send(mbox_flash, msg);
+	if (rc) {
+		prlog(PR_ERR, "Failed to enqueue/send BMC MBOX message\n");
+		goto out;
+	}
+
+	rc = wait_for_bmc(mbox_flash, MBOX_DEFAULT_TIMEOUT);
+	if (rc) {
+		prlog(PR_ERR, "Error waiting for BMC\n");
+		goto out;
+	}
+
+out:
+	msg_free_memory(msg);
+	return rc;
+}
+
+static int mbox_flash_flush(struct mbox_flash_data *mbox_flash)
+{
+	struct bmc_mbox_msg *msg;
+	int rc;
+
+	if (!mbox_flash->write.open) {
+		prlog(PR_ERR, "Attempting to flush without an open write window\n");
+		return FLASH_ERR_DEVICE_GONE;
+	}
 
 	msg = msg_alloc(mbox_flash, MBOX_C_WRITE_FLUSH);
 	if (!msg)
 		return FLASH_ERR_MALLOC_FAILED;
-	msg_put_u16(msg, 0, pos >> mbox_flash->shift);
-	msg_put_u32(msg, 2, len);
 
 	rc = msg_send(mbox_flash, msg);
 	if (rc) {
@@ -287,7 +332,6 @@ static int mbox_window_move(struct mbox_flash_data *mbox_flash,
 	if (!msg)
 		return FLASH_ERR_MALLOC_FAILED;
 
-	win->cur_pos = pos & ~(mbox_flash_mask(mbox_flash));
 	msg_put_u16(msg, 0, pos >> mbox_flash->shift);
 	rc = msg_send(mbox_flash, msg);
 	if (rc) {
@@ -306,6 +350,19 @@ static int mbox_window_move(struct mbox_flash_data *mbox_flash,
 	if ((pos + len) > (win->cur_pos + win->size))
 		/* Adjust size to meet current window */
 		*size =  (win->cur_pos + win->size) - pos;
+
+	/*
+	 * It doesn't make sense for size to be zero if len isn't zero.
+	 * If this condition happens we're most likely going to spin since
+	 * we're going to do a read/write of size zero and decerement len by
+	 * zero (in the caller) and then loop again.
+	 * Debateable as to if this should return non zero.
+	 */
+	if (len != 0 && *size == 0) {
+		prlog(PR_ERR, "Move window is indicating size zero!\n");
+		prlog(PR_ERR, "pos: 0x%" PRIx64 ", len: 0x%" PRIx64 "\n", pos, len);
+		prlog(PR_ERR, "win pos: 0x%08x win size: 0x%08x\n", win->cur_pos, win->size);
+	}
 
 out:
 	msg_free_memory(msg);
@@ -340,12 +397,16 @@ static int mbox_flash_write(struct blocklevel_device *bl, uint64_t pos,
 		if (rc)
 			return rc;
 
+		rc = mbox_flash_dirty(mbox_flash, pos, size);
+		if (rc)
+			return rc;
+
 		/*
 		 * Must flush here as changing the window contents
 		 * without flushing entitles the BMC to throw away the
 		 * data
 		 */
-		rc = mbox_flash_flush(mbox_flash, pos, size);
+		rc = mbox_flash_flush(mbox_flash);
 		if (rc)
 			return rc;
 
@@ -453,16 +514,15 @@ static int mbox_flash_erase(struct blocklevel_device *bl __unused,
 	return 0;
 }
 
-static void mbox_flash_callback(struct bmc_mbox_msg *msg, void *priv)
+static bool mbox_flash_check_response(struct bmc_mbox_msg *msg,
+		struct mbox_flash_data *mbox_flash)
 {
-	struct mbox_flash_data *mbox_flash = priv;
-
 	prlog(PR_TRACE, "%s: BMC OK\n", __func__);
 
 	if (msg->response != MBOX_R_SUCCESS) {
 		prlog(PR_ERR, "Bad response code from BMC %d\n", msg->response);
 		mbox_flash->rc = msg->response;
-		goto out;
+		return false;
 	}
 
 	if (msg->seq != mbox_flash->seq) {
@@ -470,8 +530,90 @@ static void mbox_flash_callback(struct bmc_mbox_msg *msg, void *priv)
 		prlog(PR_ERR, "Sequence numbers don't match! Got: %02x Expected: %02x\n",
 				msg->seq, mbox_flash->seq);
 		mbox_flash->rc = MBOX_R_SYSTEM_ERROR;
-		goto out;
+		return false;
 	}
+
+	return true;
+}
+
+/* To be used with minimum V2 of the protocol */
+static void mbox_flash_callback(struct bmc_mbox_msg *msg, void *priv) {
+	struct mbox_flash_data *mbox_flash = priv;
+
+	if (!mbox_flash_check_response(msg, mbox_flash))
+		goto out;
+
+	mbox_flash->rc = 0;
+
+	switch (msg->command) {
+		uint8_t version;
+
+		case MBOX_C_RESET_STATE:
+			break;
+		case MBOX_C_GET_MBOX_INFO:
+			version = msg_get_u8(msg, 0);
+			if (version == 1) {
+				mbox_flash->version = 1;
+				/* Not all version 1 daemons set argument 5 correctly */
+				mbox_flash->shift = 12; /* Protocol hardcodes to 4K anyway */
+				mbox_flash->read.size = msg_get_u16(msg, 1) << mbox_flash->shift;
+				mbox_flash->write.size = msg_get_u16(msg, 3) << mbox_flash->shift;
+			} else {
+				mbox_flash->shift = msg_get_u8(msg, 5);
+			}
+			/*
+			 * Here we deliberately ignore the 'default' sizes.
+			 * All windows opened will not provide a hint and we're
+			 * happy to let the BMC figure everything out.
+			 * Future optimisations may use the default size.
+			 */
+			break;
+		case MBOX_C_GET_FLASH_INFO:
+			mbox_flash->total_size = blocks_to_bytes(mbox_flash, msg_get_u16(msg, 0));
+			mbox_flash->erase_granule = blocks_to_bytes(mbox_flash, msg_get_u16(msg, 2));
+			break;
+		case MBOX_C_CREATE_READ_WINDOW:
+			mbox_flash->read.lpc_addr = blocks_to_bytes(mbox_flash, msg_get_u16(msg, 0));
+			mbox_flash->read.size = blocks_to_bytes(mbox_flash, msg_get_u16(msg, 2));
+			mbox_flash->read.cur_pos = blocks_to_bytes(mbox_flash, msg_get_u16(msg, 4));
+			mbox_flash->read.open = true;
+			mbox_flash->write.open = false;
+			break;
+		case MBOX_C_CLOSE_WINDOW:
+			mbox_flash->read.open = false;
+			mbox_flash->write.open = false;
+			break;
+		case MBOX_C_CREATE_WRITE_WINDOW:
+			mbox_flash->write.lpc_addr = blocks_to_bytes(mbox_flash, msg_get_u16(msg, 0));
+			mbox_flash->write.size = blocks_to_bytes(mbox_flash, msg_get_u16(msg, 2));
+			mbox_flash->write.cur_pos = blocks_to_bytes(mbox_flash, msg_get_u16(msg, 4));
+			mbox_flash->write.open = true;
+			mbox_flash->read.open = false;
+			break;
+		case MBOX_C_MARK_WRITE_DIRTY:
+			break;
+		case MBOX_C_WRITE_FLUSH:
+			break;
+		case MBOX_C_BMC_EVENT_ACK:
+			break;
+		case MBOX_C_MARK_WRITE_ERASED:
+			break;
+		default:
+			prlog(PR_ERR, "Got response to unknown command %02x\n", msg->command);
+			mbox_flash->rc = -1;
+	}
+
+out:
+	mbox_flash->busy = false;
+}
+
+/* To avoid breaking V1, leave this function here untouched */
+static void mbox_flash_callback_v1(struct bmc_mbox_msg *msg, void *priv)
+{
+	struct mbox_flash_data *mbox_flash = priv;
+
+	if (!mbox_flash_check_response(msg, mbox_flash))
+		goto out;
 
 	mbox_flash->rc = 0;
 
@@ -528,8 +670,18 @@ int mbox_flash_init(struct blocklevel_device **bl)
 	if (!mbox_flash)
 		return FLASH_ERR_MALLOC_FAILED;
 
-	/* For V1 of the protocol this is fixed. This could change */
+	/*
+	 * For V1 of the protocol this is fixed.
+	 * V2: The init code will update this
+	 */
 	mbox_flash->shift = 12;
+
+	/*
+	 * Always attempt init with V2.
+	 * The GET_MBOX_INFO response will confirm that the other side can
+	 * talk V2, we'll update this variable then if V2 is not supported
+	 */
+	mbox_flash->version = 2;
 
 	bmc_mbox_register_callback(&mbox_flash_callback, mbox_flash);
 
@@ -539,8 +691,7 @@ int mbox_flash_init(struct blocklevel_device **bl)
 		goto out;
 	}
 
-	msg_put_u8(msg, 0, 1); /* V1, do better */
-
+	msg_put_u8(msg, 0, mbox_flash->version);
 	rc = msg_send(mbox_flash, msg);
 	if (rc) {
 		prlog(PR_ERR, "Failed to enqueue/send BMC MBOX message\n");
@@ -554,6 +705,10 @@ int mbox_flash_init(struct blocklevel_device **bl)
 	}
 
 	msg_free_memory(msg);
+
+	prlog(PR_DEBUG, "Detected mbox protocol version %d\n", mbox_flash->version);
+	if (mbox_flash->version == 1)
+		bmc_mbox_register_callback(&mbox_flash_callback_v1, mbox_flash);
 
 	mbox_flash->bl.keep_alive = 0;
 	mbox_flash->bl.read = &mbox_flash_read;
