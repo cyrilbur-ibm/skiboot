@@ -497,20 +497,60 @@ out:
 	return rc;
 }
 
-static int mbox_flash_erase(struct blocklevel_device *bl __unused,
-			    uint64_t pos __unused, uint64_t len __unused)
+static int mbox_flash_erase(struct blocklevel_device *bl, uint64_t pos,
+		uint64_t len)
 {
-	/*
-	 * We can probably get away with doing nothing.
-	 * TODO: Rethink this, causes interesting behaviour in pflash.
-	 * Users do expect pflash -{e,E} to do something. This is because
-	 * on real flash this would have set that region to all 0xFF but
-	 * really the erase at the blocklevel interface was only designed
-	 * to be "please make this region writeable".
-	 * It may be wise (despite the large performance penalty) to
-	 * actually write all 0xFF here. I'll leave that as an extersise
-	 * for the future.
-	 */
+	uint64_t size;
+	struct bmc_mbox_msg *msg;
+	struct mbox_flash_data *mbox_flash;
+
+	mbox_flash = container_of(bl, struct mbox_flash_data, bl);
+
+	prlog(PR_TRACE, "Flash erase at 0x%08x for 0x%08x\n", (u32) pos, (u32) len);
+	while (len > 0) {
+		int rc;
+
+		/* Move window and get a new size to erase */
+		rc = mbox_window_move(mbox_flash, &mbox_flash->write,
+				      MBOX_C_CREATE_WRITE_WINDOW, pos, len, &size);
+		if (rc)
+			return rc;
+
+		msg = msg_alloc(mbox_flash, MBOX_C_MARK_WRITE_ERASED);
+		if (!msg)
+			return FLASH_ERR_MALLOC_FAILED;
+
+		msg_put_u16(msg, 0, pos >> mbox_flash->shift);
+		msg_put_u16(msg, 2, len >> mbox_flash->shift);
+		rc = msg_send(mbox_flash, msg);
+		if (rc) {
+			prlog(PR_ERR, "Failed to enqueue/send BMC MBOX message\n");
+			msg_free_memory(msg);
+			return rc;
+		}
+
+		rc = wait_for_bmc(mbox_flash, MBOX_DEFAULT_TIMEOUT);
+		if (rc) {
+			prlog(PR_ERR, "Error waiting for BMC\n");
+			msg_free_memory(msg);
+			return rc;
+		}
+
+		msg_free_memory(msg);
+
+		/*
+		 * Flush directly, don't mark that region dirty otherwise it
+		 * isn't clear if a write happened there or not
+		 */
+
+		rc = mbox_flash_flush(mbox_flash);
+		if (rc)
+			return rc;
+
+		len -= size;
+		pos += size;
+	}
+
 	return 0;
 }
 
