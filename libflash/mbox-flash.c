@@ -231,6 +231,9 @@ static int mbox_flash_flush(struct mbox_flash_data *mbox_flash, uint64_t pos,
 	struct bmc_mbox_msg *msg;
 	int rc;
 
+	if (!mbox_flash->write.open)
+		prlog(PR_WARNING, "Attempting to flush without an open write window\n");
+
 	msg = msg_alloc(mbox_flash, MBOX_C_WRITE_FLUSH);
 	if (!msg)
 		return FLASH_ERR_MALLOC_FAILED;
@@ -549,6 +552,8 @@ int mbox_flash_init(struct blocklevel_device **bl)
 		prlog(PR_ERR, "Error waiting for BMC\n");
 		goto out_msg;
 	}
+
+	msg_free_memory(msg);
 
 	mbox_flash->bl.keep_alive = 0;
 	mbox_flash->bl.read = &mbox_flash_read;
