@@ -58,6 +58,7 @@ struct mbox_flash_data {
 	bool reboot;
 	bool pause;
 	bool busy;
+	bool ack;
 	uint8_t seq;
 	struct bmc_mbox_msg msg_mem;
 };
@@ -294,6 +295,20 @@ out:
 	return rc;
 }
 
+static int do_acks(struct mbox_flash_data *mbox_flash)
+{
+	int rc;
+
+	if (!mbox_flash->ack)
+		return 0; /* Nothing to do */
+
+	rc = mbox_flash_ack(mbox_flash, bmc_mbox_get_attn_reg() & MBOX_ATTN_ACK_MASK);
+	if (!rc)
+		mbox_flash->ack = false;
+
+	return rc;
+}
+
 static int handle_reboot(struct mbox_flash_data *mbox_flash)
 {
 	int rc;
@@ -312,7 +327,7 @@ static int handle_reboot(struct mbox_flash_data *mbox_flash)
 	/* Clear this first so msg_send() doesn't freak out */
 	mbox_flash->reboot = false;
 
-	rc = mbox_flash_ack(mbox_flash, MBOX_ATTN_BMC_REBOOT);
+	rc = do_acks(mbox_flash);
 	if (rc) {
 		if (rc == MBOX_R_TIMEOUT)
 			rc = FLASH_ERR_AGAIN;
@@ -327,9 +342,9 @@ static int handle_reboot(struct mbox_flash_data *mbox_flash)
 	return rc;
 }
 
-static bool need_retry(struct mbox_flash_data *mbox_flash)
+static bool do_delayed_work(struct mbox_flash_data *mbox_flash)
 {
-	return is_paused(mbox_flash) ||
+	return is_paused(mbox_flash) || do_acks(mbox_flash) ||
 		(is_reboot(mbox_flash) && !handle_reboot(mbox_flash));
 }
 
@@ -556,7 +571,7 @@ static int mbox_flash_write(struct blocklevel_device *bl, uint64_t pos,
 
 	mbox_flash = container_of(bl, struct mbox_flash_data, bl);
 
-	if (need_retry(mbox_flash))
+	if (do_delayed_work(mbox_flash))
 		return FLASH_ERR_AGAIN;
 
 	prlog(PR_TRACE, "Flash write at %#" PRIx64 " for %#" PRIx64 "\n", pos, len);
@@ -609,7 +624,7 @@ static int mbox_flash_read(struct blocklevel_device *bl, uint64_t pos,
 
 	mbox_flash = container_of(bl, struct mbox_flash_data, bl);
 
-	if (need_retry(mbox_flash))
+	if (do_delayed_work(mbox_flash))
 		return FLASH_ERR_AGAIN;
 
 	prlog(PR_TRACE, "Flash read at %#" PRIx64 " for %#" PRIx64 "\n", pos, len);
@@ -648,7 +663,7 @@ static int mbox_flash_get_info(struct blocklevel_device *bl, const char **name,
 
 	mbox_flash = container_of(bl, struct mbox_flash_data, bl);
 
-	if (need_retry(mbox_flash))
+	if (do_delayed_work(mbox_flash))
 		return FLASH_ERR_AGAIN;
 
 	msg = msg_alloc(mbox_flash, MBOX_C_GET_FLASH_INFO);
@@ -697,7 +712,7 @@ static int mbox_flash_erase(struct blocklevel_device *bl, uint64_t pos,
 
 	mbox_flash = container_of(bl, struct mbox_flash_data, bl);
 
-	if (need_retry(mbox_flash))
+	if (do_delayed_work(mbox_flash))
 		return FLASH_ERR_AGAIN;
 
 	msg = msg_alloc(mbox_flash, MBOX_C_GET_FLASH_INFO);
@@ -778,6 +793,8 @@ static void mbox_flash_attn(uint8_t attn, void *priv)
 {
 	struct mbox_flash_data *mbox_flash = priv;
 
+	if (attn & MBOX_ATTN_ACK_MASK)
+		mbox_flash->ack = true;
 	if (attn & MBOX_ATTN_BMC_REBOOT) {
 		mbox_flash->reboot = true;
 		mbox_flash->read.open = false;
