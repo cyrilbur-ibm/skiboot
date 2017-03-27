@@ -55,11 +55,16 @@ struct mbox_flash_data {
 	uint32_t total_size;
 	uint32_t erase_granule;
 	int rc;
+	bool reboot;
 	bool pause;
 	bool busy;
 	uint8_t seq;
 	struct bmc_mbox_msg msg_mem;
 };
+
+static void mbox_flash_callback_v1(struct bmc_mbox_msg *msg, void *priv);
+static void mbox_flash_callback(struct bmc_mbox_msg *msg, void *priv);
+static void mbox_flash_attn(uint8_t attn, void *priv);
 
 __unused static uint64_t mbox_flash_mask(struct mbox_flash_data *mbox_flash)
 {
@@ -155,8 +160,23 @@ static bool is_valid(struct mbox_flash_data *mbox_flash, struct lpc_window *win)
 	return !is_paused(mbox_flash) && win->open;
 }
 
+/*
+ * Check if we've received a BMC reboot notification.
+ * The strategy is to check on entry to mbox-flash and return a
+ * failure accordingly. Races will be handled by the fact that the BMC
+ * won't respond so timeouts will occur. As an added precaution
+ * msg_send() checks right before sending a message (to make the race
+ * as small as possible to avoid needless timeouts).
+ */
+static bool is_reboot(struct mbox_flash_data *mbox_flash)
+{
+	return mbox_flash->reboot;
+}
+
 static int msg_send(struct mbox_flash_data *mbox_flash, struct bmc_mbox_msg *msg)
 {
+	if (is_reboot(mbox_flash))
+		return FLASH_ERR_AGAIN;
 	mbox_flash->busy = true;
 	mbox_flash->rc = 0;
 	return bmc_mbox_enqueue(msg);
@@ -192,6 +212,125 @@ static int wait_for_bmc(struct mbox_flash_data *mbox_flash, unsigned int timeout
 	}
 
 	return mbox_flash->rc;
+}
+
+static int protocol_init(struct mbox_flash_data *mbox_flash)
+{
+	struct bmc_mbox_msg *msg;
+	int rc;
+
+	bmc_mbox_register_callback(&mbox_flash_callback, mbox_flash);
+	bmc_mbox_register_attn(&mbox_flash_attn, mbox_flash);
+
+	/*
+	 * For V1 of the protocol this is fixed.
+	 * V2: The init code will update this
+	 */
+	mbox_flash->shift = 12;
+
+	/*
+	 * Always attempt init with V2.
+	 * The GET_MBOX_INFO response will confirm that the other side can
+	 * talk V2, we'll update this variable then if V2 is not supported
+	 */
+	mbox_flash->version = 2;
+
+	msg = msg_alloc(mbox_flash, MBOX_C_GET_MBOX_INFO);
+	if (!msg)
+		return FLASH_ERR_MALLOC_FAILED;
+
+	msg_put_u8(msg, 0, mbox_flash->version);
+	rc = msg_send(mbox_flash, msg);
+	if (rc) {
+		prlog(PR_ERR, "Failed to enqueue/send BMC MBOX message\n");
+		goto out;
+	}
+
+	rc = wait_for_bmc(mbox_flash, MBOX_DEFAULT_TIMEOUT);
+	if (rc) {
+		prlog(PR_ERR, "Error waiting for BMC\n");
+		goto out;
+	}
+
+	msg_free_memory(msg);
+
+	prlog(PR_DEBUG, "Detected mbox protocol version %d\n", mbox_flash->version);
+	if (mbox_flash->version == 1)
+		bmc_mbox_register_callback(&mbox_flash_callback_v1, mbox_flash);
+
+	return 0;
+out:
+	msg_free_memory(msg);
+	return rc;
+}
+
+static int mbox_flash_ack(struct mbox_flash_data *mbox_flash, uint8_t reg)
+{
+	struct bmc_mbox_msg *msg;
+	int rc;
+
+	msg = msg_alloc(mbox_flash, MBOX_C_BMC_EVENT_ACK);
+	if (!msg)
+		return FLASH_ERR_MALLOC_FAILED;
+
+	msg_put_u8(msg, 0, reg);
+	rc = msg_send(mbox_flash, msg);
+	if (rc) {
+		prlog(PR_ERR, "Failed to enqueue/send BMC MBOX message\n");
+		goto out;
+	}
+
+	/*
+	 * Use a lower timeout - there is strong evidence to suggest the
+	 * BMC won't respond, don't waste time spinning here just have the
+	 * high levels retry when the BMC might be back
+	 */
+	rc = wait_for_bmc(mbox_flash, 3);
+	if (rc)
+		prlog(PR_ERR, "Error waiting for BMC\n");
+
+out:
+	msg_free_memory(msg);
+	return rc;
+}
+
+static int handle_reboot(struct mbox_flash_data *mbox_flash)
+{
+	int rc;
+
+	/*
+	 * If the BMC ready bit isn't present then we're basically
+	 * guaranteed to timeout trying to talk to it so just fail
+	 * whatever is trying to happen.
+	 * Importantly, we can't trust that the presence of the bit means
+	 * the daemon is ok - don't assume it is going to respond at all
+	 * from here onwards
+	 */
+	if (!(bmc_mbox_get_attn_reg() & MBOX_ATTN_BMC_DAEMON_READY))
+		return FLASH_ERR_AGAIN;
+
+	/* Clear this first so msg_send() doesn't freak out */
+	mbox_flash->reboot = false;
+
+	rc = mbox_flash_ack(mbox_flash, MBOX_ATTN_BMC_REBOOT);
+	if (rc) {
+		if (rc == MBOX_R_TIMEOUT)
+			rc = FLASH_ERR_AGAIN;
+		mbox_flash->reboot = true;
+		return rc;
+	}
+
+	rc = protocol_init(mbox_flash);
+	if (rc)
+		mbox_flash->reboot = true;
+
+	return rc;
+}
+
+static bool need_retry(struct mbox_flash_data *mbox_flash)
+{
+	return is_paused(mbox_flash) ||
+		(is_reboot(mbox_flash) && !handle_reboot(mbox_flash));
 }
 
 static int lpc_window_read(struct mbox_flash_data *mbox_flash, uint32_t pos,
@@ -417,7 +556,7 @@ static int mbox_flash_write(struct blocklevel_device *bl, uint64_t pos,
 
 	mbox_flash = container_of(bl, struct mbox_flash_data, bl);
 
-	if (is_paused(mbox_flash))
+	if (need_retry(mbox_flash))
 		return FLASH_ERR_AGAIN;
 
 	prlog(PR_TRACE, "Flash write at %#" PRIx64 " for %#" PRIx64 "\n", pos, len);
@@ -470,7 +609,7 @@ static int mbox_flash_read(struct blocklevel_device *bl, uint64_t pos,
 
 	mbox_flash = container_of(bl, struct mbox_flash_data, bl);
 
-	if (is_paused(mbox_flash))
+	if (need_retry(mbox_flash))
 		return FLASH_ERR_AGAIN;
 
 	prlog(PR_TRACE, "Flash read at %#" PRIx64 " for %#" PRIx64 "\n", pos, len);
@@ -509,7 +648,7 @@ static int mbox_flash_get_info(struct blocklevel_device *bl, const char **name,
 
 	mbox_flash = container_of(bl, struct mbox_flash_data, bl);
 
-	if (is_paused(mbox_flash))
+	if (need_retry(mbox_flash))
 		return FLASH_ERR_AGAIN;
 
 	msg = msg_alloc(mbox_flash, MBOX_C_GET_FLASH_INFO);
@@ -558,6 +697,10 @@ static int mbox_flash_erase(struct blocklevel_device *bl, uint64_t pos,
 
 	mbox_flash = container_of(bl, struct mbox_flash_data, bl);
 
+	if (need_retry(mbox_flash))
+		return FLASH_ERR_AGAIN;
+
+	msg = msg_alloc(mbox_flash, MBOX_C_GET_FLASH_INFO);
 	prlog(PR_TRACE, "Flash erase at %#" PRIx64 " for %#" PRIx64" \n", pos, len);
 	while (len > 0) {
 		int rc;
@@ -636,10 +779,7 @@ static void mbox_flash_attn(uint8_t attn, void *priv)
 	struct mbox_flash_data *mbox_flash = priv;
 
 	if (attn & MBOX_ATTN_BMC_REBOOT) {
-		/*
-		 * TODO: At a minimum ACK it and call GET_MBOX_INFO
-		 * Don't do it here. We're in interrupt handler
-		 */
+		mbox_flash->reboot = true;
 		mbox_flash->read.open = false;
 		mbox_flash->write.open = false;
 		attn &= ~MBOX_ATTN_BMC_REBOOT;
@@ -790,7 +930,6 @@ out:
 int mbox_flash_init(struct blocklevel_device **bl)
 {
 	struct mbox_flash_data *mbox_flash;
-	struct bmc_mbox_msg *msg;
 	int rc;
 
 	if (!bl)
@@ -802,46 +941,14 @@ int mbox_flash_init(struct blocklevel_device **bl)
 	if (!mbox_flash)
 		return FLASH_ERR_MALLOC_FAILED;
 
-	/*
-	 * For V1 of the protocol this is fixed.
-	 * V2: The init code will update this
-	 */
-	mbox_flash->shift = 12;
-
-	/*
-	 * Always attempt init with V2.
-	 * The GET_MBOX_INFO response will confirm that the other side can
-	 * talk V2, we'll update this variable then if V2 is not supported
-	 */
-	mbox_flash->version = 2;
-
-	bmc_mbox_register_callback(&mbox_flash_callback, mbox_flash);
-	bmc_mbox_register_attn(&mbox_flash_attn, mbox_flash);
-
-	msg = msg_alloc(mbox_flash, MBOX_C_GET_MBOX_INFO);
-	if (!msg) {
-		rc = FLASH_ERR_MALLOC_FAILED;
-		goto out;
-	}
-
-	msg_put_u8(msg, 0, mbox_flash->version);
-	rc = msg_send(mbox_flash, msg);
+	if (bmc_mbox_get_attn_reg() & MBOX_ATTN_BMC_REBOOT)
+		rc = handle_reboot(mbox_flash);
+	else
+		rc = protocol_init(mbox_flash);
 	if (rc) {
-		prlog(PR_ERR, "Failed to enqueue/send BMC MBOX message\n");
-		goto out_msg;
+		free(mbox_flash);
+		return rc;
 	}
-
-	rc = wait_for_bmc(mbox_flash, MBOX_DEFAULT_TIMEOUT);
-	if (rc) {
-		prlog(PR_ERR, "Error waiting for BMC\n");
-		goto out_msg;
-	}
-
-	msg_free_memory(msg);
-
-	prlog(PR_DEBUG, "Detected mbox protocol version %d\n", mbox_flash->version);
-	if (mbox_flash->version == 1)
-		bmc_mbox_register_callback(&mbox_flash_callback_v1, mbox_flash);
 
 	mbox_flash->bl.keep_alive = 0;
 	mbox_flash->bl.read = &mbox_flash_read;
@@ -851,12 +958,6 @@ int mbox_flash_init(struct blocklevel_device **bl)
 
 	*bl = &(mbox_flash->bl);
 	return 0;
-
-out_msg:
-	msg_free_memory(msg);
-out:
-	free(mbox_flash);
-	return rc;
 }
 
 void mbox_flash_exit(struct blocklevel_device *bl)
