@@ -432,5 +432,20 @@ int main(void)
 		return 1;
 	}
 
+	reset_buf(buf);
+	/* Test 9: Erase a biger section, not aligned */
+	if (blocklevel_smart_erase(bl, 0x20, 0xa00)) {
+		ERR("Failed to blocklevel_smart_erase(0x20, 0xa00)\n");
+		return 1;
+	}
+	miss = check_buf(buf, 0x20, 0xa20);
+	if (miss) {
+		ERR("Buffer mismatch after blocklevel_smart_erase(0x20, 0xa00) at 0x%x\n",
+				miss == -1 ? 0 : miss);
+		dump_buf(buf, 0x1c, 0x25, miss == -1 ? 0 : miss);
+		dump_buf(buf, 0xa1c, 0xa25, miss == -1 ? 0 : miss);
+		return 1;
+	}
+
 	return 0;
 }
