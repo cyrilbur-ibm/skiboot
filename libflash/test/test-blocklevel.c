@@ -27,6 +27,9 @@
 
 #define ERR(fmt...) fprintf(stderr, fmt)
 
+/* Setting this to true prints quite a lot of debug */
+bool libflash_debug = 0;
+
 int main(void)
 {
 	int i;
@@ -79,17 +82,17 @@ int main(void)
 		return 1;
 	}
 
-	if (ecc_protected(bl, 0, 1) != 1) {
+	if (ecc_protected(bl, 0, 1, NULL) != 1) {
 		ERR("Invaid result for ecc_protected(0, 1)\n");
 		return 1;
 	}
 
-	if (ecc_protected(bl, 0, 0x1000) != 1) {
+	if (ecc_protected(bl, 0, 0x1000, NULL) != 1) {
 		ERR("Invalid result for ecc_protected(0, 0x1000)\n");
 		return 1;
 	}
 
-	if (ecc_protected(bl, 0x100, 0x100) != 1) {
+	if (ecc_protected(bl, 0x100, 0x100, NULL) != 1) {
 		ERR("Invalid result for ecc_protected(0x0100, 0x100)\n");
 		return 1;
 	}
@@ -107,33 +110,33 @@ int main(void)
 		return 1;
 	}
 
-	if (ecc_protected(bl, 0x1000, 0) != 1) {
+	if (ecc_protected(bl, 0x1000, 0, NULL) != 1) {
 		ERR("Invalid result for ecc_protected(0x1000, 0)\n");
 		return 1;
 	}
 
-	if (ecc_protected(bl, 0x1000, 0x1000) != -1) {
+	if (ecc_protected(bl, 0x1000, 0x1000, NULL) != -1) {
 		ERR("Invalid result for ecc_protected(0x1000, 0x1000)\n");
 		return 1;
 	}
 
-	if (ecc_protected(bl, 0x1000, 0x100) != 1) {
+	if (ecc_protected(bl, 0x1000, 0x100, NULL) != 1) {
 		ERR("Invalid result for ecc_protected(0x1000, 0x100)\n");
 		return 1;
 	}
 
-	if (ecc_protected(bl, 0x2000, 0) != 0) {
+	if (ecc_protected(bl, 0x2000, 0, NULL) != 0) {
 		ERR("Invalid result for ecc_protected(0x2000, 0)\n");
 		return 1;
 	}
 
-	if (ecc_protected(bl, 0x4000, 1) != 0) {
+	if (ecc_protected(bl, 0x4000, 1, NULL) != 0) {
 		ERR("Invalid result for ecc_protected(0x4000, 1)\n");
 		return 1;
 	}
 
 	/* Check for asking for a region with mixed protection */
-	if (ecc_protected(bl, 0x100, 0x2000) != -1) {
+	if (ecc_protected(bl, 0x100, 0x2000, NULL) != -1) {
 		ERR("Invalid result for ecc_protected(0x100, 0x2000)\n");
 		return 1;
 	}
@@ -154,7 +157,7 @@ int main(void)
 		return 1;
 	}
 
-	if (ecc_protected(bl, 0x5120, 0x10) != 1) {
+	if (ecc_protected(bl, 0x5120, 0x10, NULL) != 1) {
 		ERR("Invalid result for ecc_protected(0x5120, 0x10)\n");
 		return 1;
 	}
@@ -169,7 +172,7 @@ int main(void)
 		return 1;
 	}
 
-	if (ecc_protected(bl, 0x4920, 0x10) != 1) {
+	if (ecc_protected(bl, 0x4920, 0x10, NULL) != 1) {
 		ERR("Invalid result for ecc_protected(0x4920, 0x10)\n");
 		return 1;
 	}
