@@ -263,7 +263,8 @@ int blocklevel_write(struct blocklevel_device *bl, uint64_t pos, const void *buf
 		 * Read the end bytes that memcpy_to_ecc_unaligned() will need
 		 * to calculate the last ecc byte
 		 */
-		rc  = blocklevel_raw_read(bl, ecc_pos + end_len, buffer + end_len, end_chunk);
+		rc = blocklevel_raw_read(bl, ecc_pos + end_len, ((char *)buffer) + end_len,
+				end_chunk);
 		if (rc) {
 			errno = EBADF;
 			rc = FLASH_ERR_ECC_INVALID;
