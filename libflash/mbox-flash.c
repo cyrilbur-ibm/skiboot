@@ -23,6 +23,7 @@
 #include <string.h>
 
 #include <skiboot.h>
+#include <inttypes.h>
 #include <timebase.h>
 #include <timer.h>
 #include <libflash/libflash.h>
@@ -54,6 +55,7 @@ struct mbox_flash_data {
 	uint32_t total_size;
 	uint32_t erase_granule;
 	int rc;
+	bool pause;
 	bool busy;
 	uint8_t seq;
 	struct bmc_mbox_msg msg_mem;
@@ -121,6 +123,38 @@ static void msg_free_memory(struct bmc_mbox_msg *mem __unused)
 	/* Allocation is so simple this isn't required */
 }
 
+/*
+ * The BMC may send is an out of band message to say that it doesn't
+ * own the flash anymore.
+ * It guarantees we can still access our (open) windows but it does
+ * not guarantee their contents until it clears the bit without
+ * sending us a corresponding bit to say that the windows are bad
+ * first.
+ * Since this is all things that will happen in the future, we should
+ * not perform any calls speculatively as its almost impossible to
+ * rewind.
+ */
+static bool is_paused(struct mbox_flash_data *mbox_flash)
+{
+	return mbox_flash->pause;
+}
+
+/*
+ * After a read or a write it is wise to check that the window we just
+ * read/write to/from is still valid otherwise it is possible some of
+ * the data didn't make it.
+ * This check is an optimisation as we'll close all our windows on any
+ * notification from the BMC that the windows are bad. See the above
+ * comment about is_paused().
+ * A foolproof (but much closer) method of validating reads/writes
+ * would be to attempt to close the window, if that fails then we can
+ * be sure that the read/write was no good.
+ */
+static bool is_valid(struct mbox_flash_data *mbox_flash, struct lpc_window *win)
+{
+	return !is_paused(mbox_flash) && win->open;
+}
+
 static int msg_send(struct mbox_flash_data *mbox_flash, struct bmc_mbox_msg *msg)
 {
 	mbox_flash->busy = true;
@@ -173,7 +207,7 @@ static int lpc_window_read(struct mbox_flash_data *mbox_flash, uint32_t pos,
 		uint32_t chunk;
 		uint32_t dat;
 
-		/* Choose access size */
+		/* XXX: make this read until it's aligned */
 		if (len > 3 && !(off & 3)) {
 			rc = lpc_read(OPAL_LPC_FW, off, &dat, 4);
 			if (!rc)
@@ -383,7 +417,10 @@ static int mbox_flash_write(struct blocklevel_device *bl, uint64_t pos,
 
 	mbox_flash = container_of(bl, struct mbox_flash_data, bl);
 
-	prlog(PR_TRACE, "Flash write at 0x%08llx for 0x%08llx\n", pos, len);
+	if (is_paused(mbox_flash))
+		return FLASH_ERR_AGAIN;
+
+	prlog(PR_TRACE, "Flash write at %#" PRIx64 " for %#" PRIx64 "\n", pos, len);
 	while (len > 0) {
 		/* Move window and get a new size to read */
 		rc = mbox_window_move(mbox_flash, &mbox_flash->write,
@@ -404,7 +441,9 @@ static int mbox_flash_write(struct blocklevel_device *bl, uint64_t pos,
 		/*
 		 * Must flush here as changing the window contents
 		 * without flushing entitles the BMC to throw away the
-		 * data
+		 * data. Unlike the read case there isn't a need to explicitly
+		 * validate the window, the flush command will fail if the
+		 * window was compromised.
 		 */
 		rc = mbox_flash_flush(mbox_flash);
 		if (rc)
@@ -431,7 +470,10 @@ static int mbox_flash_read(struct blocklevel_device *bl, uint64_t pos,
 
 	mbox_flash = container_of(bl, struct mbox_flash_data, bl);
 
-	prlog(PR_TRACE, "Flash read at 0x%08llx for 0x%08llx\n", pos, len);
+	if (is_paused(mbox_flash))
+		return FLASH_ERR_AGAIN;
+
+	prlog(PR_TRACE, "Flash read at %#" PRIx64 " for %#" PRIx64 "\n", pos, len);
 	while (len > 0) {
 		/* Move window and get a new size to read */
 		rc = mbox_window_move(mbox_flash, &mbox_flash->read,
@@ -448,6 +490,12 @@ static int mbox_flash_read(struct blocklevel_device *bl, uint64_t pos,
 		len -= size;
 		pos += size;
 		buf += size;
+		/*
+		 * Ensure my window is still open, if it isn't we can't trust
+		 * what we read
+		 */
+		if (!is_valid(mbox_flash, &mbox_flash->read))
+			return FLASH_ERR_AGAIN;
 	}
 	return rc;
 }
@@ -460,6 +508,10 @@ static int mbox_flash_get_info(struct blocklevel_device *bl, const char **name,
 	int rc;
 
 	mbox_flash = container_of(bl, struct mbox_flash_data, bl);
+
+	if (is_paused(mbox_flash))
+		return FLASH_ERR_AGAIN;
+
 	msg = msg_alloc(mbox_flash, MBOX_C_GET_FLASH_INFO);
 	if (!msg)
 		return FLASH_ERR_MALLOC_FAILED;
@@ -506,7 +558,7 @@ static int mbox_flash_erase(struct blocklevel_device *bl, uint64_t pos,
 
 	mbox_flash = container_of(bl, struct mbox_flash_data, bl);
 
-	prlog(PR_TRACE, "Flash erase at 0x%08x for 0x%08x\n", (u32) pos, (u32) len);
+	prlog(PR_TRACE, "Flash erase at %#" PRIx64 " for %#" PRIx64" \n", pos, len);
 	while (len > 0) {
 		int rc;
 
@@ -540,9 +592,11 @@ static int mbox_flash_erase(struct blocklevel_device *bl, uint64_t pos,
 
 		/*
 		 * Flush directly, don't mark that region dirty otherwise it
-		 * isn't clear if a write happened there or not
+		 * isn't clear if a write happened there or not. Unlike the
+		 * read case there isn't a need to explicitly validate the
+		 * window, the flush command will fail if the window was
+		 * compromised.
 		 */
-
 		rc = mbox_flash_flush(mbox_flash);
 		if (rc)
 			return rc;
@@ -576,7 +630,42 @@ static bool mbox_flash_check_response(struct bmc_mbox_msg *msg,
 	return true;
 }
 
-/* To be used with minimum V2 of the protocol */
+/* Called from interrupt handler, don't send any mbox messages */
+static void mbox_flash_attn(uint8_t attn, void *priv)
+{
+	struct mbox_flash_data *mbox_flash = priv;
+
+	if (attn & MBOX_ATTN_BMC_REBOOT) {
+		/*
+		 * TODO: At a minimum ACK it and call GET_MBOX_INFO
+		 * Don't do it here. We're in interrupt handler
+		 */
+		mbox_flash->read.open = false;
+		mbox_flash->write.open = false;
+		attn &= ~MBOX_ATTN_BMC_REBOOT;
+	}
+
+	if (attn & MBOX_ATTN_BMC_WINDOW_RESET) {
+		mbox_flash->read.open = false;
+		mbox_flash->write.open = false;
+		attn &= ~MBOX_ATTN_BMC_WINDOW_RESET;
+	}
+
+	if (attn & MBOX_ATTN_BMC_FLASH_LOST) {
+		mbox_flash->pause = true;
+		attn &= ~MBOX_ATTN_BMC_FLASH_LOST;
+	} else {
+		mbox_flash->pause = false;
+	}
+
+	if (attn & MBOX_ATTN_BMC_DAEMON_READY)
+		attn &= ~MBOX_ATTN_BMC_DAEMON_READY;
+}
+
+/*
+ * To be used with minimum V2 of the protocol
+ * Called from interrupt handler, don't send any mbox messages
+ */
 static void mbox_flash_callback(struct bmc_mbox_msg *msg, void *priv) {
 	struct mbox_flash_data *mbox_flash = priv;
 
@@ -647,7 +736,10 @@ out:
 	mbox_flash->busy = false;
 }
 
-/* To avoid breaking V1, leave this function here untouched */
+/*
+ * To avoid breaking V1, leave this function here untouched
+ * Called from interrupt handler, don't send any mbox messages
+ */
 static void mbox_flash_callback_v1(struct bmc_mbox_msg *msg, void *priv)
 {
 	struct mbox_flash_data *mbox_flash = priv;
@@ -724,6 +816,7 @@ int mbox_flash_init(struct blocklevel_device **bl)
 	mbox_flash->version = 2;
 
 	bmc_mbox_register_callback(&mbox_flash_callback, mbox_flash);
+	bmc_mbox_register_attn(&mbox_flash_attn, mbox_flash);
 
 	msg = msg_alloc(mbox_flash, MBOX_C_GET_MBOX_INFO);
 	if (!msg) {

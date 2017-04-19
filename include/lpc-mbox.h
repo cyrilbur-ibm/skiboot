@@ -41,6 +41,11 @@
 #define MBOX_R_SYSTEM_ERROR 0x04
 #define MBOX_R_TIMEOUT 0x05
 
+#define MBOX_ATTN_BMC_REBOOT (1 << 0)
+#define MBOX_ATTN_BMC_WINDOW_RESET (1 << 1)
+#define MBOX_ATTN_BMC_FLASH_LOST (1 << 6)
+#define MBOX_ATTN_BMC_DAEMON_READY (1 << 7)
+
 /* Default poll interval before interrupts are working */
 #define MBOX_DEFAULT_POLL_MS	200
 
@@ -56,4 +61,7 @@ struct bmc_mbox_msg {
 int bmc_mbox_enqueue(struct bmc_mbox_msg *msg);
 int bmc_mbox_register_callback(void (*callback)(struct bmc_mbox_msg *msg, void *priv),
 		void *drv_data);
+int bmc_mbox_register_attn(void (*callback)(uint8_t bits, void *priv),
+		void *drv_data);
+uint8_t bmc_mbox_get_attn_reg(void);
 #endif /* __LPC_MBOX_H */
