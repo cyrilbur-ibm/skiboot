@@ -52,6 +52,7 @@ struct lpc_window {
 
 struct mbox_flash_data {
 	int version;
+	uint16_t timeout;
 	uint32_t shift;
 	struct lpc_window read;
 	struct lpc_window write;
@@ -376,12 +377,7 @@ static int mbox_flash_ack(struct mbox_flash_data *mbox_flash, uint8_t reg)
 		goto out;
 	}
 
-	/*
-	 * Use a lower timeout - there is strong evidence to suggest the
-	 * BMC won't respond, don't waste time spinning here just have the
-	 * high levels retry when the BMC might be back
-	 */
-	rc = wait_for_bmc(mbox_flash, 3);
+	rc = wait_for_bmc(mbox_flash, mbox_flash->timeout);
 	if (rc)
 		prlog(PR_ERR, "Error waiting for BMC\n");
 
@@ -428,6 +424,9 @@ static void mbox_flash_do_get_mbox_info(struct mbox_flash_data *mbox_flash,
 		mbox_flash->write.size = blocks_to_bytes(mbox_flash, msg_get_u16(msg, 3));
 	} else { /* V2 compatible */
 		mbox_flash->shift = msg_get_u8(msg, 5);
+		mbox_flash->timeout = msg_get_u16(msg, 6);
+		if (mbox_flash->timeout == 0)
+			mbox_flash->timeout = MBOX_DEFAULT_TIMEOUT;
 	}
 	/* Callers will handle the case where the version is not known
 	 *
@@ -570,7 +569,7 @@ static int mbox_flash_mark_write(struct mbox_flash_data *mbox_flash,
 		goto out;
 	}
 
-	rc = wait_for_bmc(mbox_flash, MBOX_DEFAULT_TIMEOUT);
+	rc = wait_for_bmc(mbox_flash, mbox_flash->timeout);
 	if (rc) {
 		prlog(PR_ERR, "Error waiting for BMC\n");
 		goto out;
@@ -625,7 +624,7 @@ static int mbox_flash_flush(struct mbox_flash_data *mbox_flash)
 		goto out;
 	}
 
-	rc = wait_for_bmc(mbox_flash, MBOX_DEFAULT_TIMEOUT);
+	rc = wait_for_bmc(mbox_flash, mbox_flash->timeout);
 	if (rc)
 		prlog(PR_ERR, "Error waiting for BMC\n");
 
@@ -683,7 +682,7 @@ static int mbox_window_move(struct mbox_flash_data *mbox_flash,
 	mbox_flash->read.open = false;
 	mbox_flash->write.open = false;
 
-	rc = wait_for_bmc(mbox_flash, MBOX_DEFAULT_TIMEOUT);
+	rc = wait_for_bmc(mbox_flash, mbox_flash->timeout);
 	if (rc) {
 		prlog(PR_ERR, "Error waiting for BMC\n");
 		goto out;
@@ -843,7 +842,7 @@ static int mbox_flash_get_info(struct blocklevel_device *bl, const char **name,
 		goto out;
 	}
 
-	if (wait_for_bmc(mbox_flash, MBOX_DEFAULT_TIMEOUT)) {
+	if (wait_for_bmc(mbox_flash, mbox_flash->timeout)) {
 		prlog(PR_ERR, "Error waiting for BMC\n");
 		goto out;
 	}
@@ -1016,6 +1015,12 @@ static int protocol_init(struct mbox_flash_data *mbox_flash)
 	mbox_flash->shift = 12;
 
 	/*
+	 * For V1 we'll use this value.
+	 * V2: The init code (may) update this
+	 */
+	mbox_flash->timeout = MBOX_DEFAULT_TIMEOUT;
+
+	/*
 	 * Always attempt init with highest known version.
 	 * The GET_MBOX_INFO response will confirm that the other side can
 	 * talk the highest version, we'll update this variable then if
@@ -1034,7 +1039,7 @@ static int protocol_init(struct mbox_flash_data *mbox_flash)
 		goto out;
 	}
 
-	rc = wait_for_bmc(mbox_flash, MBOX_DEFAULT_TIMEOUT);
+	rc = wait_for_bmc(mbox_flash, mbox_flash->timeout);
 	if (rc) {
 		prlog(PR_ERR, "Error waiting for BMC\n");
 		goto out;
