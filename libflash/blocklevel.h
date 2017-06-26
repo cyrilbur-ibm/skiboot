@@ -34,6 +34,20 @@ enum blocklevel_flags {
 	WRITE_NEED_ERASE = 1,
 };
 
+enum blocklevel_async_op {
+	READ = 1,
+	WRITE,
+	ERASE
+};
+
+struct blocklevel_async {
+	bool active;
+	enum blocklevel_async_op op;
+	uint64_t pos;
+	uint64_t len;
+	void *buf;
+};
+
 /*
  * libffs may be used with different backends, all should provide these for
  * libflash to get the information it needs
@@ -56,6 +70,8 @@ struct blocklevel_device {
 	enum blocklevel_flags flags;
 
 	struct blocklevel_range ecc_prot;
+
+	struct blocklevel_async async;
 };
 int blocklevel_raw_read(struct blocklevel_device *bl, uint64_t pos, void *buf, uint64_t len);
 int blocklevel_read(struct blocklevel_device *bl, uint64_t pos, void *buf, uint64_t len);
@@ -64,6 +80,9 @@ int blocklevel_write(struct blocklevel_device *bl, uint64_t pos, const void *buf
 int blocklevel_erase(struct blocklevel_device *bl, uint64_t pos, uint64_t len);
 int blocklevel_get_info(struct blocklevel_device *bl, const char **name, uint64_t *total_size,
 		uint32_t *erase_granule);
+
+int blocklevel_async_poll(struct blocklevel_device *bl);
+int blocklevel_erase_async(struct blocklevel_device *bl, uint64_t pos, uint64_t len);
 
 /*
  * blocklevel_smart_write() performs reads on the data to see if it

@@ -28,6 +28,13 @@
 #include <libstb/stb.h>
 #include <libstb/container.h>
 #include <elf.h>
+#include <timer.h>
+#include <timebase.h>
+
+struct flash_async_info {
+	struct timer poller;
+	uint64_t token;
+};
 
 struct flash {
 	struct list_node	list;
@@ -36,6 +43,7 @@ struct flash {
 	uint64_t		size;
 	uint32_t		block_size;
 	int			id;
+	struct flash_async_info async_info;
 };
 
 static LIST_HEAD(flashes);
@@ -200,6 +208,29 @@ static int flash_nvram_probe(struct flash *flash, struct ffs_handle *ffs)
 
 /* core flash support */
 
+/*
+ * Called with flash lock held, drop it on async completion
+ */
+static void flash_poll(struct timer *t __unused, void *data, uint64_t now __unused)
+{
+	struct flash *flash = data;
+	int rc;
+
+	rc = blocklevel_async_poll(flash->bl);
+	if (rc == FLASH_ASYNC_POLL) {
+		/*
+		 * We want to get called pretty much straight away, just have
+		 * to be sure that we jump back out to Linux so that if this
+		 * very long we don't cause RCU or the scheduler to freak
+		 */
+		schedule_timer(&flash->async_info.poller, msecs_to_tb(1));
+		return;
+	}
+
+	flash_release(flash);
+	opal_queue_msg(OPAL_MSG_ASYNC_COMP, NULL, NULL, flash->async_info.token, rc);
+}
+
 static struct dt_node *flash_add_dt_node(struct flash *flash, int id)
 {
 	struct dt_node *flash_node;
@@ -295,6 +326,7 @@ int flash_register(struct blocklevel_device *bl)
 	flash->size = size;
 	flash->block_size = block_size;
 	flash->id = num_flashes();
+	init_timer(&flash->async_info.poller, flash_poll, flash);
 
 	list_add(&flashes, &flash->list);
 
@@ -371,8 +403,18 @@ static int64_t opal_flash_op(enum flash_op op, uint64_t id, uint64_t offset,
 		rc = blocklevel_raw_write(flash->bl, offset, (void *)buf, size);
 		break;
 	case FLASH_OP_ERASE:
-		rc = blocklevel_erase(flash->bl, offset, size);
-		break;
+		rc = blocklevel_erase_async(flash->bl, offset, size);
+		if (rc != FLASH_ASYNC_POLL)
+			break;
+		schedule_timer(&flash->async_info.poller, msecs_to_tb(1));
+		/*
+		 * FLASH_OP_ERASE can now happen asynchronously, don't go out
+		 * the regular path.
+		 *
+		 * Ensure we hold the lock to flash for the entirety of the
+		 * async process
+		 */
+		return OPAL_ASYNC_COMPLETION;
 	default:
 		assert(0);
 	}

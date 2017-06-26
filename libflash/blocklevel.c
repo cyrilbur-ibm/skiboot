@@ -29,6 +29,10 @@
 
 #define PROT_REALLOC_NUM 25
 
+#ifndef MIN
+#define MIN(a, b)	((a) < (b) ? (a) : (b))
+#endif
+
 /* This function returns tristate values.
  * 1  - The region is ECC protected
  * 0  - The region is not ECC protected
@@ -76,6 +80,46 @@ static int release(struct blocklevel_device *bl)
 		errno = err;
 	}
 	return rc;
+}
+
+int blocklevel_async_poll(struct blocklevel_device *bl)
+{
+	uint64_t len;
+	int rc;
+
+	if (!bl->async.active)
+		return FLASH_ERR_PARM_ERROR;
+
+	/* Just chunk things up by erase granule */
+	len = MIN(bl->erase_mask + 1, bl->async.len);
+
+	switch (bl->async.op) {
+		case READ:
+		case WRITE:
+			/*
+			 * Very large caveat - do not remove this without auditing
+			 * this entire file. smart_write() and smart_erase() will
+			 * not 'just work' async. They will need work.
+			 */
+			bl->async.buf += len;
+			return FLASH_ERR_PARM_ERROR;
+		case ERASE:
+			rc = bl->erase(bl, bl->async.pos, len);
+			break;
+		default:
+			return FLASH_ERR_PARM_ERROR;
+	}
+
+	if (rc)
+		return rc;
+
+	bl->async.pos += len;
+	bl->async.len -= len;
+
+	if (bl->async.len == 0)
+		bl->async.active = false;
+
+	return bl->async.active ? FLASH_ASYNC_POLL : 0;
 }
 
 int blocklevel_raw_read(struct blocklevel_device *bl, uint64_t pos, void *buf, uint64_t len)
@@ -189,9 +233,9 @@ out:
 	return rc;
 }
 
-int blocklevel_erase(struct blocklevel_device *bl, uint64_t pos, uint64_t len)
+static int check_erase_params(struct blocklevel_device *bl, const char *caller,
+		uint64_t pos, uint64_t len)
 {
-	int rc;
 	if (!bl || !bl->erase) {
 		errno = EINVAL;
 		return FLASH_ERR_PARM_ERROR;
@@ -199,15 +243,47 @@ int blocklevel_erase(struct blocklevel_device *bl, uint64_t pos, uint64_t len)
 
 	/* Programmer may be making a horrible mistake without knowing it */
 	if (pos & bl->erase_mask) {
-		fprintf(stderr, "blocklevel_erase: pos (0x%"PRIx64") is not erase block (0x%08x) aligned\n",
-				pos, bl->erase_mask + 1);
+		FL_ERR("%s: pos (0x%"PRIx64") is not erase block (0x%08x) aligned\n",
+				caller, pos, bl->erase_mask + 1);
+		return FLASH_ERR_ERASE_BOUNDARY;
 	}
 
 	if (len & bl->erase_mask) {
-		fprintf(stderr, "blocklevel_erase: len (0x%"PRIx64") is not erase block (0x%08x) aligned\n",
-				len, bl->erase_mask + 1);
+		FL_ERR("%s: len (0x%"PRIx64") is not erase block (0x%08x) aligned\n",
+				caller, len, bl->erase_mask + 1);
 		return FLASH_ERR_ERASE_BOUNDARY;
 	}
+
+	return 0;
+}
+
+int blocklevel_erase_async(struct blocklevel_device *bl, uint64_t pos, uint64_t len)
+{
+	int rc;
+
+	rc = check_erase_params(bl, __func__, pos, len);
+	if (rc)
+		return rc;
+
+	if (bl->async.active)
+		return FLASH_ERR_PARM_ERROR;
+
+	bl->async.op = ERASE;
+	bl->async.pos = pos;
+	bl->async.len = len;
+	bl->async.active = true;
+
+	/* Call the poll once to get everything going */
+	return blocklevel_async_poll(bl);
+}
+
+int blocklevel_erase(struct blocklevel_device *bl, uint64_t pos, uint64_t len)
+{
+	int rc;
+
+	rc = check_erase_params(bl, __func__, pos, len);
+	if (rc)
+		return rc;
 
 	rc = reacquire(bl);
 	if (rc)
