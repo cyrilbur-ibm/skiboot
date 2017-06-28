@@ -235,8 +235,8 @@ extern int flash_register(struct blocklevel_device *bl);
 extern int flash_start_preload_resource(enum resource_id id, uint32_t subid,
 					void *buf, size_t *len);
 extern int flash_resource_loaded(enum resource_id id, uint32_t idx);
-extern bool flash_reserve(void);
-extern void flash_release(void);
+extern bool system_flash_reserve(void);
+extern void system_flash_release(void);
 #define FLASH_SUBPART_ALIGNMENT 0x1000
 #define FLASH_SUBPART_HEADER_SIZE FLASH_SUBPART_ALIGNMENT
 extern int flash_subpart_info(void *part_header, uint32_t header_len,
