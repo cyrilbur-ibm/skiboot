@@ -335,9 +335,6 @@ static int64_t opal_flash_op(enum flash_op op, uint64_t id, uint64_t offset,
 	struct flash *flash = NULL;
 	int rc;
 
-	if (!try_lock(&flash_lock))
-		return OPAL_BUSY;
-
 	list_for_each(&flashes, flash, list)
 		if (flash->id == id)
 			break;
@@ -346,7 +343,7 @@ static int64_t opal_flash_op(enum flash_op op, uint64_t id, uint64_t offset,
 		/* Couldn't find the flash */
 		return OPAL_PARAMETER;
 
-	if (flash->busy) {
+	if (!flash_reserve(flash)) {
 		rc = OPAL_BUSY;
 		goto err;
 	}
@@ -385,7 +382,7 @@ static int64_t opal_flash_op(enum flash_op op, uint64_t id, uint64_t offset,
 		goto err;
 	}
 
-	unlock(&flash_lock);
+	flash_release(flash);
 
 	opal_queue_msg(OPAL_MSG_ASYNC_COMP, NULL, NULL, token, rc);
 	return OPAL_ASYNC_COMPLETION;
