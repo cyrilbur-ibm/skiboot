@@ -28,6 +28,23 @@
 #include <libstb/stb.h>
 #include <libstb/container.h>
 #include <elf.h>
+#include <timer.h>
+#include <timebase.h>
+
+enum flash_op {
+	FLASH_OP_READ,
+	FLASH_OP_WRITE,
+	FLASH_OP_ERASE,
+};
+
+struct flash_async_info {
+	enum flash_op op;
+	struct timer poller;
+	uint64_t token;
+	uint64_t pos;
+	uint64_t len;
+	uint64_t buf;
+};
 
 struct flash {
 	struct list_node	list;
@@ -36,6 +53,7 @@ struct flash {
 	uint64_t		size;
 	uint32_t		block_size;
 	int			id;
+	struct flash_async_info async;
 };
 
 static LIST_HEAD(flashes);
@@ -263,6 +281,64 @@ static int num_flashes(void)
 	return i;
 }
 
+/*
+ * Called with flash lock held, drop it on async completion
+ */
+static void flash_poll(struct timer *t __unused, void *data,
+		uint64_t now __unused)
+{
+	struct flash *flash = data;
+	uint64_t len;
+	int rc;
+
+	len = MIN(flash->async.len, flash->block_size);
+
+	/*
+	 * These ops intentionally have no smarts (ecc correction or erase
+	 * before write) to them.
+	 * Skiboot is simply exposing the PNOR flash to the host.
+	 * The host is expected to understand that this is a raw flash
+	 * device and treat it as such.
+	 */
+
+	switch (flash->async.op) {
+	case FLASH_OP_READ:
+		rc = blocklevel_raw_read(flash->bl, flash->async.pos,
+				(void *)flash->async.buf, len);
+		break;
+	case FLASH_OP_WRITE:
+		rc = blocklevel_raw_write(flash->bl, flash->async.pos,
+				(void *)flash->async.buf, len);
+		break;
+	case FLASH_OP_ERASE:
+		rc = blocklevel_erase(flash->bl, flash->async.pos, len);
+		break;
+	default:
+		assert(0);
+	}
+
+	if (rc) {
+		rc = OPAL_HARDWARE;
+		goto out;
+	}
+
+	flash->async.pos += len;
+	flash->async.buf += len;
+	flash->async.len -= len;
+	if (flash->async.len) {
+		/*
+		 * We want to get called pretty much straight away, just have
+		 * to be sure that we jump back out to Linux so that we don't
+		 * cause RCU or the scheduler to freak.
+		 */
+		schedule_timer(&flash->async.poller, msecs_to_tb(1));
+		return;
+	}
+out:
+	opal_queue_msg(OPAL_MSG_ASYNC_COMP, NULL, NULL, flash->async.token, rc);
+	flash_release(flash);
+}
+
 int flash_register(struct blocklevel_device *bl)
 {
 	uint64_t size;
@@ -295,6 +371,7 @@ int flash_register(struct blocklevel_device *bl)
 	flash->size = size;
 	flash->block_size = block_size;
 	flash->id = num_flashes();
+	init_timer(&flash->async.poller, flash_poll, flash);
 
 	list_add(&flashes, &flash->list);
 
@@ -323,17 +400,10 @@ int flash_register(struct blocklevel_device *bl)
 	return OPAL_SUCCESS;
 }
 
-enum flash_op {
-	FLASH_OP_READ,
-	FLASH_OP_WRITE,
-	FLASH_OP_ERASE,
-};
-
 static int64_t opal_flash_op(enum flash_op op, uint64_t id, uint64_t offset,
 		uint64_t buf, uint64_t size, uint64_t token)
 {
 	struct flash *flash = NULL;
-	int rc;
 
 	list_for_each(&flashes, flash, list)
 		if (flash->id == id)
@@ -350,44 +420,30 @@ static int64_t opal_flash_op(enum flash_op op, uint64_t id, uint64_t offset,
 			|| offset + size > flash->size) {
 		prlog(PR_DEBUG, "Requested flash op %d beyond flash size %" PRIu64 "\n",
 				op, flash->size);
-		rc = OPAL_PARAMETER;
-		goto err;
+		flash_release(flash);
+		return OPAL_PARAMETER;
 	}
+
+	flash->async.token = token;
+	flash->async.op = op;
+	flash->async.pos = offset;
+	flash->async.buf = buf;
+	flash->async.len = size;
+
+	/* Kick off the process */
+	flash_poll(&flash->async.poller, flash, mftb());
 
 	/*
-	 * These ops intentionally have no smarts (ecc correction or erase
-	 * before write) to them.
-	 * Skiboot is simply exposing the PNOR flash to the host.
-	 * The host is expected to understand that this is a raw flash
-	 * device and treat it as such.
+	 * As of 1/07/2017 the powernv_flash driver in Linux will handle
+	 * OPAL_SUCCESS as an error, the only thing that makes it handle
+	 * things as though they're working is receiving
+	 * OPAL_ASYNC_COMPLETION.
+	 *
+	 * This pretty much rules out any optimisation where the required
+	 * work could be done stright away with no need for
+	 * OPAL_ASYNC_COMPLETION. Oh well.
 	 */
-	switch (op) {
-	case FLASH_OP_READ:
-		rc = blocklevel_raw_read(flash->bl, offset, (void *)buf, size);
-		break;
-	case FLASH_OP_WRITE:
-		rc = blocklevel_raw_write(flash->bl, offset, (void *)buf, size);
-		break;
-	case FLASH_OP_ERASE:
-		rc = blocklevel_erase(flash->bl, offset, size);
-		break;
-	default:
-		assert(0);
-	}
-
-	if (rc) {
-		rc = OPAL_HARDWARE;
-		goto err;
-	}
-
-	flash_release(flash);
-
-	opal_queue_msg(OPAL_MSG_ASYNC_COMP, NULL, NULL, token, rc);
 	return OPAL_ASYNC_COMPLETION;
-
-err:
-	flash_release(flash);
-	return rc;
 }
 
 static int64_t opal_flash_read(uint64_t id, uint64_t offset, uint64_t buf,

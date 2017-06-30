@@ -20,6 +20,10 @@ success, the calls will return ``OPAL_ASYNC_COMPLETION``, and an
 opal_async_completion message will be sent (with the appropriate token
 argument) when the operation completes.
 
+Due to an error in the powernv_flash driver in Linux these three OPAL
+calls should never return ``OPAL_SUCCESS`` as the driver is likely to
+treat this return value as an error.
+
 All calls share the same return values:
 
 ``OPAL_ASYNC_COMPLETION``
