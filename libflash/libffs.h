@@ -144,8 +144,6 @@ int ffs_entry_user_set(struct ffs_entry *ent, struct ffs_entry_user *user);
 
 int ffs_entry_add(struct ffs_hdr *hdr, struct ffs_entry *entry, unsigned int side);
 
-int ffs_hdr_create_backup(struct ffs_hdr *hdr);
-
 int ffs_hdr_finalise(struct blocklevel_device *bl, struct ffs_hdr *hdr);
 
 int ffs_hdr_free(struct ffs_hdr *hdr);

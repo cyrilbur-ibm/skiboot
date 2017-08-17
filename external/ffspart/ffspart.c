@@ -92,7 +92,7 @@ int main(int argc, char *argv[])
 	unsigned int sides = 1;
 	uint32_t block_size = 0, block_count = 0;
 	enum order order = ORDER_ADB;
-	bool bad_input = false, backup_part = false;
+	bool bad_input = false;
 	char *pnor = NULL, *input = NULL;
 	struct ffs_hdr *new_hdr;
 	FILE *in_file;
@@ -101,7 +101,6 @@ int main(int argc, char *argv[])
 
 	while(1) {
 		struct option long_opts[] = {
-			{"backup",	no_argument, NULL, 'b'},
 			{"block_size",	required_argument,	NULL,	's'},
 			{"block_count",	required_argument,	NULL,	'c'},
 			{"debug",	no_argument,	NULL,	'g'},
@@ -117,9 +116,6 @@ int main(int argc, char *argv[])
 		if (c == EOF)
 			break;
 		switch(c) {
-		case 'b':
-			backup_part = true;
-			break;
 		case 'c':
 			block_count = strtoul(optarg, NULL, 0);
 			break;
@@ -295,7 +291,6 @@ int main(int argc, char *argv[])
 			case 'F':
 				user.miscflags |= FFS_MISCFLAGS_REPROVISION;
 				break;
-			/* Not sure these are valid */
 			case 'B':
 				user.miscflags |= FFS_MISCFLAGS_BACKUP;
 				break;
@@ -405,14 +400,6 @@ out_if:
 out_while:
 		free(new_entry);
 		goto out_close_bl;
-	}
-
-	if (backup_part) {
-		rc = ffs_hdr_create_backup(new_hdr);
-		if (rc) {
-			fprintf(stderr, "Failed to create backup part\n");
-			goto out_close_bl;
-		}
 	}
 
 	rc = ffs_hdr_finalise(bl, new_hdr);

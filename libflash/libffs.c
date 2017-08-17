@@ -525,13 +525,6 @@ int ffs_entry_add(struct ffs_hdr *hdr, struct ffs_entry *entry, unsigned int sid
 {
 	int rc;
 
-	/*
-	 * Refuse to add anything after BACKUP_PART has been added, not
-	 * sure why this is needed anymore
-	 */
-	if (hdr->backup)
-		return FLASH_ERR_PARM_ERROR;
-
 	if (side == 0) { /* Sideless... */
 		rc = __ffs_entry_add(hdr, entry);
 		if (!rc && hdr->side) {
@@ -560,42 +553,6 @@ int ffs_entry_add(struct ffs_hdr *hdr, struct ffs_entry *entry, unsigned int sid
 	} else {
 		rc = FLASH_ERR_PARM_ERROR;
 	}
-
-	return rc;
-}
-
-/* This should be done last! */
-int ffs_hdr_create_backup(struct ffs_hdr *hdr)
-{
-	struct ffs_entry *ent;
-	struct ffs_entry *backup;
-	uint32_t hdr_size, flash_end;
-	int rc = 0;
-
-	ent = list_tail(&hdr->entries, struct ffs_entry, list);
-	if (!ent) {
-		return FLASH_ERR_PARM_ERROR;
-	}
-
-	hdr_size = ffs_hdr_raw_size(ffs_num_entries(hdr) + 1);
-	/* Whole number of blocks BACKUP_PART needs to be */
-	hdr_size = ((hdr_size + hdr->block_size) / hdr->block_size) * hdr->block_size;
-	flash_end = hdr->base + (hdr->block_size * hdr->block_count);
-	rc = ffs_entry_new("BACKUP_PART", flash_end - hdr_size, hdr_size, &backup);
-	if (rc)
-		return rc;
-
-	rc = __ffs_entry_add(hdr, backup);
-	if (rc) {
-		free(backup);
-		return rc;
-	}
-
-	hdr->backup = backup;
-
-	/* Do we try to roll back completely if that fails or leave what we've added? */
-	if (hdr->side && hdr->base == 0)
-		rc = ffs_hdr_create_backup(hdr->side);
 
 	return rc;
 }
@@ -685,11 +642,18 @@ int ffs_hdr_finalise(struct blocklevel_device *bl, struct ffs_hdr *hdr)
 	if (rc)
 		goto out;
 
-	if (hdr->backup) {
-		fprintf(stderr, "Actually writing backup part @ 0x%08x\n", hdr->backup->base);
-		blocklevel_erase(bl, hdr->backup->base, hdr->size);
-		rc = blocklevel_write(bl, hdr->backup->base, real_hdr,
-			ffs_hdr_raw_size(num_entries));
+	/*
+	 * Any partition marked with backup flags should have a TOC in
+	 * it
+	 */
+	list_for_each(&hdr->entries, ent, list) {
+		if (ent->user.miscflags & FFS_MISCFLAGS_BACKUP) {
+			fprintf(stderr, "Writing another TOC to 0x%08x\n",
+					ent->base);
+			blocklevel_erase(bl, ent->base, hdr->size);
+			rc = blocklevel_write(bl, ent->base, real_hdr,
+				ffs_hdr_raw_size(num_entries));
+		}
 	}
 	if (rc)
 		goto out;
