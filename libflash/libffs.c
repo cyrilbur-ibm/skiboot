@@ -193,6 +193,11 @@ bool has_flag(struct ffs_entry *ent, uint16_t flag)
 	return ((ent->user.miscflags & flag) != 0);
 }
 
+bool has_vercheck_flag(struct ffs_entry *ent, uint8_t flag)
+{
+	return ((ent->user.vercheck & flag) != 0);
+}
+
 struct ffs_entry *ffs_entry_get(struct ffs_handle *ffs, uint32_t index)
 {
 	int i = 0;

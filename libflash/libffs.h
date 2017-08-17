@@ -94,6 +94,8 @@ bool has_ecc(struct ffs_entry *ent);
 
 bool has_flag(struct ffs_entry *ent, uint16_t flag);
 
+bool has_vercheck_flag(struct ffs_entry *ent, uint8_t flag);
+
 /* Init */
 
 int ffs_init(uint32_t offset, uint32_t max_size, struct blocklevel_device *bl,

@@ -158,6 +158,105 @@ static struct ffs_handle *open_ffs(struct flash_details *flash)
 	return ffsh;
 }
 
+static bool part_in_toc(struct flash_details *flash, uint32_t toc, const char *part)
+{
+	uint32_t saved_toc = flash->toc;
+	int i;
+	struct ffs_handle *ffsh;
+	bool part_exists = false;
+
+	flash->toc = toc;
+
+	if (saved_toc == toc)
+		return true;
+
+	ffsh = open_ffs(flash);
+	if (!ffsh) {
+		flash->toc = saved_toc;
+		return false;
+	}
+
+	for (i = 0;; i++) {
+		char *name = NULL;
+		int rc;
+		rc = ffs_part_info(ffsh, i, &name, NULL, NULL, NULL, NULL);
+		if (rc == FFS_ERR_PART_NOT_FOUND)
+			break;
+
+		if (strcmp(name, part) == 0) {
+			part_exists = true;
+		}
+		free(name);
+	}
+	ffs_close(ffsh);
+
+	flash->toc = saved_toc;
+
+	return part_exists;
+}
+
+static void print_ffs_csv_info(struct flash_details *flash,
+			       uint32_t toc, uint32_t next_toc)
+{
+	struct ffs_entry *ent;
+	struct ffs_handle *ffsh;
+	int rc;
+	int i;
+
+	ffsh = open_ffs(flash);
+	if (!ffsh)
+		return;
+
+	for (i = 0;; i++) {
+		uint32_t start, size, act;
+		char *name = NULL, *flags;
+		const char *fname;
+		int l;
+
+		rc = ffs_part_info(ffsh, i, &name, &start, &size, &act, NULL);
+		if (rc == FFS_ERR_PART_NOT_FOUND)
+			break;
+
+		ent = ffs_entry_get(ffsh, i);
+		if (rc || !ent) {
+			fprintf(stderr, "Error %d scanning partitions\n",
+					!ent ? FFS_ERR_PART_NOT_FOUND : rc);
+		    goto out;
+		}
+
+
+		l = asprintf(&flags, "%s%s%s%s%s%s%s%s",
+			     has_ecc(ent) ? "E" : "",
+			     has_vercheck_flag(ent, FFS_VERCHECK_SHA512V) ? "V" : "",
+			     has_vercheck_flag(ent, FFS_VERCHECK_SHA512EC) ? "I" : "",
+			     has_flag(ent, FFS_MISCFLAGS_PRESERVED) ? "P" : "",
+			     has_flag(ent, FFS_MISCFLAGS_READONLY) ? "R" : "",
+			     has_flag(ent, FFS_MISCFLAGS_BACKUP) ? "B" : "",
+			     has_flag(ent, FFS_MISCFLAGS_REPROVISION) ? "F" : "",
+			     (!part_in_toc(flash, next_toc, name)) ? "1" : ""
+			);
+		if (l < 0)
+			goto out;
+
+		if (strcmp(name, "BACKUP_PART") == 0)
+			fname = "/dev/null";
+		else
+			fname = name;
+
+		if (!(strcmp(name, "part") == 0) &&
+		    !(strcmp(name, "OTHER_SIDE") == 0))
+			printf("%s,0x%08x,0x%08x,%s,%s\n",
+			       name, start, size, flags, fname);
+
+		free(flags);
+out:
+		free(name);
+	}
+
+	ffs_close(ffsh);
+	return;
+}
+
 static void print_flash_info(struct flash_details *flash)
 {
 	struct ffs_handle *ffsh;
@@ -192,6 +291,42 @@ static void print_flash_info(struct flash_details *flash)
 		next_toc = print_ffs_info(next_ffsh, next_toc);
 	}
 	flash->toc = toc;
+}
+
+static void print_flash_csv_info(struct flash_details *flash)
+{
+	struct ffs_handle *ffsh;
+	uint32_t toc;
+
+	if (bmc_flash)
+		return;
+
+	toc = flash->toc;
+
+	ffsh = open_ffs(flash);
+	if (!ffsh)
+		return;
+
+	uint32_t start;
+	uint32_t next_toc = toc;
+	int i;
+
+	for (i = 0;; i++) {
+		char *name = NULL;
+		int rc;
+
+		rc = ffs_part_info(ffsh, i, &name, &start, NULL, NULL, NULL);
+		if (rc == FFS_ERR_PART_NOT_FOUND)
+			break;
+
+		if (strcmp(name, "OTHER_SIDE") == 0) {
+			next_toc = start;
+		}
+		free(name);
+	}
+	ffs_close(ffsh);
+
+	print_ffs_csv_info(flash, toc, next_toc);
 }
 
 static struct ffs_handle *open_partition(struct flash_details *flash,
@@ -667,6 +802,8 @@ static void print_help(const char *pname)
 	printf("\t\tpartition and then set all the ECC bits as they should be\n\n");
 	printf("\t-i, --info\n");
 	printf("\t\tDisplay some information about the flash.\n\n");
+	printf("\t-I, --csv\n");
+	printf("\t\tSame as -i, but output as CSV consumable by ffspart\n\n");
 	printf("\t--detail\n");
 	printf("\t\tDisplays detailed info about a particular partition.\n");
 	printf("\t\tAccepts a numeric partition or can be used in conjuction\n");
@@ -684,6 +821,7 @@ int main(int argc, char *argv[])
 	uint32_t address = 0, read_size = 0, write_size = 0, detail_id = UINT_MAX;
 	bool erase = false, do_clear = false;
 	bool program = false, erase_all = false, info = false, do_read = false;
+	bool csv_info = false;
 	bool enable_4B = false, disable_4B = false;
 	bool show_help = false, show_version = false;
 	bool no_action = false, tune = false;
@@ -708,6 +846,7 @@ int main(int argc, char *argv[])
 			{"force",	no_argument,		NULL,	'f'},
 			{"flash-file",	required_argument,	NULL,	'F'},
 			{"info",	no_argument,		NULL,	'i'},
+			{"csv",		no_argument,		NULL,	'I'},
 			{"detail",  optional_argument,  NULL,   'm'},
 			{"tune",	no_argument,		NULL,	't'},
 			{"dummy",	no_argument,		NULL,	'd'},
@@ -721,7 +860,7 @@ int main(int argc, char *argv[])
 		};
 		int c, oidx = 0;
 
-		c = getopt_long(argc, argv, "+:a:s:P:r:43Eep:fdihvbtgS:T:cF:",
+		c = getopt_long(argc, argv, "+:a:s:P:r:43Eep:fdiIhvbtgS:T:cF:",
 				long_opts, &oidx);
 		if (c == -1)
 			break;
@@ -783,6 +922,10 @@ int main(int argc, char *argv[])
 			break;
 		case 'i':
 			info = true;
+			break;
+		case 'I':
+			info = true;
+			csv_info = true;
 			break;
 		case 'b':
 			bmc_flash = true;
@@ -1099,7 +1242,10 @@ int main(int argc, char *argv[])
 		 * because of --size, but still respect if it came from --toc (we
 		 * assume the user knows what they're doing in that case)
 		 */
-		print_flash_info(&flash);
+		if (csv_info)
+			print_flash_csv_info(&flash);
+		else
+			print_flash_info(&flash);
 	}
 
 	if (print_detail)
