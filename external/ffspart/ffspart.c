@@ -220,6 +220,9 @@ int main(int argc, char *argv[])
 		int side = -1;
 		uint32_t pbase, psize, pactual = 0;
 
+		if (line[0] == '#')
+			continue;
+
 		if (line[strlen(line) - 1] == '\n')
 			line[strlen(line) - 1] = '\0';
 
