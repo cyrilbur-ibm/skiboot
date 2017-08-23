@@ -188,6 +188,88 @@ static int ffs_entry_to_cpu(struct ffs_hdr *hdr,
 	return rc;
 }
 
+char *ffs_entry_user_to_string(struct ffs_entry_user *user)
+{
+	char *ret;
+
+	if (!user)
+		return NULL;
+
+	ret = strdup("-------");
+	if (!ret)
+		return NULL;
+
+	if (user->datainteg & FFS_ENRY_INTEG_ECC)
+		ret[0] = 'E';
+
+	if (user->vercheck & FFS_VERCHECK_SHA512V)
+		ret[1] = 'V';
+
+	if (user->vercheck & FFS_VERCHECK_SHA512EC)
+		ret[2] = 'I';
+
+	if (user->miscflags & FFS_MISCFLAGS_PRESERVED)
+		ret[3] = 'P';
+
+	if (user->miscflags & FFS_MISCFLAGS_READONLY)
+		ret[4] = 'R';
+
+	if (user->miscflags & FFS_MISCFLAGS_BACKUP)
+		ret[5] = 'B';
+
+	if (user->miscflags & FFS_MISCFLAGS_REPROVISION)
+		ret[6] = 'F';
+
+	if (user->miscflags & FFS_MISCFLAGS_GOLDEN)
+		ret[7] = 'G';
+
+	return ret;
+}
+
+int ffs_string_to_entry_user(const char *flags, int nflags,
+		struct ffs_entry_user *user)
+{
+	int i;
+
+	if (!user || !flags)
+		return FLASH_ERR_PARM_ERROR;
+
+	memset(user, 0, sizeof(struct ffs_entry_user));
+	for (i = 0; i < nflags; i++) {
+		switch (flags[i]) {
+		case 'E':
+			user->datainteg |= FFS_ENRY_INTEG_ECC;
+			break;
+		case 'V':
+			user->vercheck |= FFS_VERCHECK_SHA512V;
+			break;
+		case 'I':
+			user->vercheck |= FFS_VERCHECK_SHA512EC;
+			break;
+		case 'P':
+			user->miscflags |= FFS_MISCFLAGS_PRESERVED;
+			break;
+		case 'R':
+			user->miscflags |= FFS_MISCFLAGS_READONLY;
+			break;
+		case 'B':
+			user->miscflags |= FFS_MISCFLAGS_BACKUP;
+			break;
+		case 'F':
+			user->miscflags |= FFS_MISCFLAGS_REPROVISION;
+			break;
+		case 'G':
+			user->miscflags |= FFS_MISCFLAGS_GOLDEN;
+			break;
+		default:
+			FL_DBG("Unknown flag '%c'\n", flags[i]);
+			return FLASH_ERR_PARM_ERROR;
+		}
+	}
+
+	return 0;
+}
+
 bool has_flag(struct ffs_entry *ent, uint16_t flag)
 {
 	return ((ent->user.miscflags & flag) != 0);
@@ -723,11 +805,21 @@ int ffs_entry_user_set(struct ffs_entry *ent, struct ffs_entry_user *user)
 	if (user->vercheck & ~(FFS_VERCHECK_SHA512V | FFS_VERCHECK_SHA512EC))
 		return -1;
 	if (user->miscflags & ~(FFS_MISCFLAGS_PRESERVED | FFS_MISCFLAGS_BACKUP |
-				FFS_MISCFLAGS_READONLY | FFS_MISCFLAGS_REPROVISION))
+				FFS_MISCFLAGS_READONLY | FFS_MISCFLAGS_REPROVISION | FFS_MISCFLAGS_GOLDEN))
 		return -1;
 
 	memcpy(&ent->user, user, sizeof(*user));
 	return 0;
+}
+
+struct ffs_entry_user ffs_entry_user_get(struct ffs_entry *ent)
+{
+	struct ffs_entry_user user = { 0 };
+
+	if (ent)
+		memcpy(&user, &ent->user, sizeof(user));
+
+	return user;
 }
 
 int ffs_entry_new(const char *name, uint32_t base, uint32_t size, struct ffs_entry **r)
