@@ -338,7 +338,7 @@ out_if:
 
 		continue;
 out_while:
-		free(new_entry);
+		ffs_entry_put(new_entry);
 		goto out_close_bl;
 	}
 

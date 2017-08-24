@@ -149,6 +149,7 @@ struct __ffs_entry {
  * @type:	Describe type of partition
  * @flags:	Partition attributes (optional)
  * @user:	User data (optional)
+ * @ref:	Refcount
  */
 struct ffs_entry {
 	char name[FFS_PART_NAME_MAX + 1];
@@ -159,6 +160,7 @@ struct ffs_entry {
 	enum ffs_type type;
 	uint32_t flags;
 	struct ffs_entry_user user;
+	unsigned int ref;
 };
 
 
