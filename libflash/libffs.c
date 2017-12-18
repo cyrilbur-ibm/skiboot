@@ -558,7 +558,7 @@ int ffs_next_side(struct ffs_handle *ffs, struct ffs_handle **new_ffs,
 
 int ffs_entry_add(struct ffs_hdr *hdr, struct ffs_entry *entry)
 {
-	const char *smallest_name;
+	//const char *smallest_name;
 	uint32_t smallest_base;
 	int i;
 
@@ -573,7 +573,7 @@ int ffs_entry_add(struct ffs_hdr *hdr, struct ffs_entry *entry)
 		return FFS_ERR_BAD_PART_SIZE;
 
 	smallest_base = entry->base;
-	smallest_name = entry->name;
+	//smallest_name = entry->name;
 	/*
 	 * TODO: This may have assumed entries was sorted
 	 */
@@ -600,16 +600,20 @@ int ffs_entry_add(struct ffs_hdr *hdr, struct ffs_entry *entry)
 		/* Skip the first partition as it IS the partition table */
 		if (ent->base < smallest_base && i > 0) {
 			smallest_base = ent->base;
-			smallest_name = ent->name;
+			//smallest_name = ent->name;
 		}
 	}
-	if ((hdr->count + 1) * sizeof(struct __ffs_entry) +
-			sizeof(struct __ffs_hdr) > smallest_base) {
-		fprintf(stderr, "Adding partition '%s' would cause partition '%s' at "
-				"0x%08x to overlap with the header\n", entry->name, smallest_name,
-				smallest_base);
-		return FFS_ERR_BAD_PART_BASE;
-	}
+	/*
+	 * This check doesn't play nice with backup parts
+	 *
+	 *if ((hdr->count + 1) * sizeof(struct __ffs_entry) +
+	 *		sizeof(struct __ffs_hdr) > smallest_base) {
+	 *	fprintf(stderr, "Adding partition '%s' would cause partition '%s' at "
+	 *			"0x%08x to overlap with the header\n", entry->name, smallest_name,
+	 *			smallest_base);
+	 *	return FFS_ERR_BAD_PART_BASE;
+	 *}
+	 */
 
 	if (hdr->count == hdr->entries_size) {
 		struct ffs_entry **old = hdr->entries;
