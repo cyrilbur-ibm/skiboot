@@ -188,7 +188,7 @@ char *ffs_entry_user_to_string(struct ffs_entry_user *user)
 	if (!user)
 		return NULL;
 
-	ret = strdup("-------");
+	ret = strdup("--------");
 	if (!ret)
 		return NULL;
 
@@ -216,6 +216,10 @@ char *ffs_entry_user_to_string(struct ffs_entry_user *user)
 	if (user->miscflags & FFS_MISCFLAGS_GOLDEN)
 		ret[7] = 'G';
 
+	if (user->miscflags & FFS_MISCFLAGS_CLEARECCERR)
+		ret[8] = 'C';
+
+	return ret;
 	return ret;
 }
 
@@ -253,6 +257,9 @@ int ffs_string_to_entry_user(const char *flags, int nflags,
 			break;
 		case 'G':
 			user->miscflags |= FFS_MISCFLAGS_GOLDEN;
+			break;
+		case 'C':
+			user->miscflags |= FFS_MISCFLAGS_CLEARECCERR;
 			break;
 		default:
 			FL_DBG("Unknown flag '%c'\n", flags[i]);
@@ -712,7 +719,8 @@ int ffs_entry_user_set(struct ffs_entry *ent, struct ffs_entry_user *user)
 	if (user->vercheck & ~(FFS_VERCHECK_SHA512V | FFS_VERCHECK_SHA512EC))
 		return -1;
 	if (user->miscflags & ~(FFS_MISCFLAGS_PRESERVED | FFS_MISCFLAGS_BACKUP |
-				FFS_MISCFLAGS_READONLY | FFS_MISCFLAGS_REPROVISION | FFS_MISCFLAGS_GOLDEN))
+				FFS_MISCFLAGS_READONLY | FFS_MISCFLAGS_REPROVISION |
+				FFS_MISCFLAGS_GOLDEN | FFS_MISCFLAGS_CLEARECCERR))
 		return -1;
 
 	memcpy(&ent->user, user, sizeof(*user));
